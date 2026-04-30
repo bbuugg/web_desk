@@ -890,9 +890,14 @@ export default function FileManager({ actions }: AppComponentProps) {
         {connected && (
           <ContextMenu>
             <ContextMenuTrigger
-              disabled={contextMenusDisabled}
+              disabled={contextMenusDisabled || isMobile}
               className="flex-1 min-h-full flex flex-col"
               onContextMenu={e => {
+                if ((e.target as HTMLElement).closest('.file-item')) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  return;
+                }
                 swallowSuppressedInteraction(e);
               }}
             >
