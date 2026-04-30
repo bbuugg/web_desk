@@ -223,18 +223,17 @@ export default function ArchiveViewer({ windowId, actions, appState }: AppCompon
       {/* Toolbar */}
       <div className="flex flex-col border-b border-white/5 bg-white/[0.02]">
         <div className="flex items-center justify-between px-3 py-2">
-          <div className="text-xs text-gray-400 truncate max-w-[50%] flex items-center gap-2 font-medium">
-            <FileArchive className="w-3.5 h-3.5 text-amber-400" />
-            {path.split(/[/\\]/).pop()}
-          </div>
           <div className="flex items-center gap-2">
             <button
               onClick={(e) => { e.stopPropagation(); setShowFilePicker(true); }}
-              className="p-1.5 rounded-md text-gray-400 hover:bg-white/10 hover:text-white transition-colors mr-2"
+              className="flex items-center gap-1.5 rounded-md bg-white/5 px-3 py-1 text-xs font-semibold text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
               title="Open different archive"
             >
               <FolderOpen className="w-3.5 h-3.5" />
+              Open
             </button>
+          </div>
+          <div className="flex items-center gap-2">
             {selected.size > 0 && (
               <button
                 onClick={(e) => { e.stopPropagation(); setShowPicker(true); }}
