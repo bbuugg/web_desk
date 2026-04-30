@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, ExternalLink, FileSpreadsheet, FileText, FileWarning, Loader2, FolderOpen } from 'lucide-react';
+import { Download, ExternalLink, FileText, FileWarning, Loader2, FolderOpen } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -397,10 +397,14 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
   return (
     <div className="flex h-full flex-col bg-[#0d1117] text-gray-200">
       <div className="flex items-center justify-between gap-3 border-b border-white/5 bg-white/[0.02] px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2 text-xs text-gray-400">
-          {state.kind === 'spreadsheet' ? <FileSpreadsheet className="h-4 w-4 text-emerald-400" /> : <FileText className="h-4 w-4 text-sky-400" />}
-          <span className="truncate">{path ? getFileName(path) : 'No Document'}</span>
-        </div>
+        <button
+          onClick={() => setShowPicker(true)}
+          className="inline-flex items-center gap-2 rounded-md bg-white/5 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
+          title="Open File"
+        >
+          <FolderOpen className="h-4 w-4" />
+          Open
+        </button>
         <div className="flex items-center gap-1">
           {path && (
             <>
@@ -426,13 +430,6 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
               </button>
             </>
           )}
-          <button
-            onClick={() => setShowPicker(true)}
-            className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-white/10 hover:text-white"
-            title="Open File"
-          >
-            <FolderOpen className="h-4 w-4" />
-          </button>
         </div>
       </div>
       <div className="min-h-0 flex-1 relative">

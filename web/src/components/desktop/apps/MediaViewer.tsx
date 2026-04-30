@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Download, ZoomIn, ZoomOut, Maximize2, RotateCw, ExternalLink, Play, FolderOpen, FileImage } from 'lucide-react';
+import { Download, ZoomIn, ZoomOut, Maximize2, RotateCw, ExternalLink, FolderOpen, FileImage } from 'lucide-react';
 import type { AppComponentProps } from '@/types/desktop';
 import FolderPicker from '../FolderPicker';
 
@@ -70,15 +70,15 @@ export default function MediaViewer({ windowId, actions, appState }: AppComponen
     <div className="flex flex-col h-full bg-[#0d1117] text-gray-200 select-none">
       {/* Toolbar */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-white/5 bg-white/[0.02]">
-        <div className="text-xs text-gray-400 truncate max-w-[40%] flex items-center gap-2">
-          {isVideo ? <Play className="w-3 h-3" /> : null}
-          {fileName}
-        </div>
+        <button
+          onClick={() => setShowFilePicker(true)}
+          className="inline-flex items-center gap-2 rounded-md bg-white/5 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
+          title="Open File"
+        >
+          <FolderOpen className="w-4 h-4" />
+          Open
+        </button>
         <div className="flex items-center gap-1">
-          <ToolbarBtn onClick={() => setShowFilePicker(true)} title="Open File">
-            <FolderOpen className="w-4 h-4" />
-          </ToolbarBtn>
-          <div className="w-px h-4 bg-white/10 mx-1" />
           {!isVideo && (
             <>
               <ToolbarBtn onClick={handleZoomOut} title="Zoom Out">

@@ -200,52 +200,51 @@ export default function TextEditor({ windowId, actions, appState }: AppComponent
   return (
     <div className="flex flex-col h-full bg-[#1e1e1e] text-gray-200">
       {/* Toolbar */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-white/5 bg-[#252526]">
-        <div className="flex-1 truncate text-sm text-gray-300 font-mono">
-          {filePath} {isDirty ? '*' : ''}
-        </div>
-
+      <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-white/5 bg-[#252526]">
         <button
           onClick={() => setShowFilePicker(true)}
-          className="p-1.5 rounded-md text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
+          className="inline-flex items-center gap-2 rounded-md bg-white/5 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
           title="Open different file"
         >
           <FolderOpen className="w-4 h-4" />
+          Open
         </button>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-gray-300 bg-white/5 hover:bg-white/10 transition-colors"
-            title="语言"
+        <div className="flex items-center gap-2">
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-gray-300 bg-white/5 hover:bg-white/10 transition-colors"
+              title="语言"
+            >
+              {activeLanguageLabel}
+              <ChevronDown className="w-3 h-3 opacity-60" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
+              {LANGUAGES.map(lang => (
+                <DropdownMenuItem
+                  key={lang.id}
+                  onSelect={() => setManualLanguage(lang.id)}
+                  className={lang.id === activeLanguage ? 'text-emerald-400' : ''}
+                >
+                  {lang.label}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <button
+            onClick={saveFile}
+            disabled={!filePath || !isDirty || saving || !connected}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors
+              ${(!filePath || !isDirty || saving || !connected)
+                ? 'text-gray-500 bg-white/5 cursor-not-allowed'
+                : 'text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20'
+              }`}
           >
-            {activeLanguageLabel}
-            <ChevronDown className="w-3 h-3 opacity-60" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
-            {LANGUAGES.map(lang => (
-              <DropdownMenuItem
-                key={lang.id}
-                onSelect={() => setManualLanguage(lang.id)}
-                className={lang.id === activeLanguage ? 'text-emerald-400' : ''}
-              >
-                {lang.label}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-
-        <button
-          onClick={saveFile}
-          disabled={!filePath || !isDirty || saving || !connected}
-          className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition-colors
-            ${(!filePath || !isDirty || saving || !connected)
-              ? 'text-gray-500 bg-white/5 cursor-not-allowed'
-              : 'text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20'
-            }`}
-        >
-          {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-          Save
-        </button>
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            Save
+          </button>
+        </div>
       </div>
 
       {/* Editor Content */}
