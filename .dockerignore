@@ -1,0 +1,7 @@
+.git
+.gitignore
+server.exe
+web/node_modules
+web/dist
+web/tsconfig.tsbuildinfo
+web/src/**/*.d.ts

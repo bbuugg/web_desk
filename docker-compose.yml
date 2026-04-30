@@ -1,0 +1,35 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
+        GO_PROXY: ${GO_PROXY:-https://proxy.golang.org,direct}
+        GO_SUMDB: ${GO_SUMDB:-sum.golang.org}
+        GO_PRIVATE: ${GO_PRIVATE:-}
+        GO_NO_SUMDB: ${GO_NO_SUMDB:-}
+        DEBIAN_MIRROR: ${DEBIAN_MIRROR:-http://mirrors.ustc.edu.cn/debian}
+        DEBIAN_SECURITY_MIRROR: ${DEBIAN_SECURITY_MIRROR:-http://mirrors.ustc.edu.cn/debian-security}
+        APT_PACKAGES: ${APT_PACKAGES:-bash ca-certificates curl net-tools procps vim wget}
+    image: linux-web:latest
+    container_name: linux-web
+    cpus: ${APP_CPUS:-1.0}
+    mem_limit: ${APP_MEMORY:-512m}
+    pids_limit: ${APP_PIDS_LIMIT:-256}
+    ports:
+      - "8080:8080"
+    volumes:
+      - type: bind
+        source: ${DATA_DIR:-./data}
+        target: /data
+    read_only: false
+    tmpfs:
+      - /tmp
+    environment:
+      STATIC_DIR: /app/web/dist
+      HOME: /data
+      GIN_MODE: release
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
