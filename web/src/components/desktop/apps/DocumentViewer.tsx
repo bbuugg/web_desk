@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, ExternalLink, FileText, FileWarning, Loader2, FolderOpen } from 'lucide-react';
-import * as XLSX from 'xlsx';
-import mammoth from 'mammoth';
+import type { AppComponentProps } from '@/types/desktop';
+import { Download, ExternalLink, FileText, FileWarning, FolderOpen, Loader2 } from 'lucide-react';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
-import type { AppComponentProps } from '@/types/desktop';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import FolderPicker from '../FolderPicker';
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -14,12 +13,10 @@ type DocumentState =
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
   | { kind: 'pdf'; path: string; source: 'file' | 'converted' }
-  | { kind: 'docx'; html: string }
   | { kind: 'spreadsheet'; workbook: XLSX.WorkBook; sheetName: string };
 
 const SUPPORTED_SPREADSHEET_EXTS = new Set(['xls', 'xlsx', 'csv']);
-const SUPPORTED_WORD_EXTS = new Set(['doc', 'docx']);
-const SUPPORTED_PRESENTATION_EXTS = new Set(['ppt', 'pptx']);
+const SUPPORTED_PRESENTATION_EXTS = new Set(['ppt', 'pptx', 'doc', 'docx']);
 
 function getFileName(path: string) {
   if (!path) return 'document';
@@ -228,24 +225,6 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
           return;
         }
 
-        if (extension === 'docx') {
-          if (buffer.byteLength === 0) {
-            throw new Error('File content is empty (0 bytes). The file may be corrupted — try re-copying it.');
-          }
-          const result = await mammoth.convertToHtml({ arrayBuffer: buffer });
-          if (cancelled) return;
-          setState({ kind: 'docx', html: result.value || '<p class="text-gray-500">Empty document</p>' });
-          return;
-        }
-
-        if (SUPPORTED_WORD_EXTS.has(extension)) {
-          setState({
-            kind: 'error',
-            message: 'Legacy .doc files cannot be rendered reliably in-browser. Please download the file or convert it to .docx for preview.',
-          });
-          return;
-        }
-
         setState({ kind: 'error', message: `Unsupported document type: .${extension || 'unknown'}` });
       } catch (error) {
         if (!cancelled) {
@@ -334,17 +313,6 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
 
     if (state.kind === 'pdf') {
       return <PdfPreview path={state.path} source={state.source} />;
-    }
-
-    if (state.kind === 'docx') {
-      return (
-        <div className="h-full overflow-auto bg-[#11161f] p-6">
-          <article
-            className="document-prose mx-auto min-h-full max-w-4xl rounded-xl bg-white px-10 py-8 text-gray-900 shadow-2xl"
-            dangerouslySetInnerHTML={{ __html: state.html }}
-          />
-        </div>
-      );
     }
 
     const sheet = state.workbook.Sheets[state.sheetName];
