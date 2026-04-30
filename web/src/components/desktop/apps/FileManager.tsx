@@ -29,6 +29,7 @@ import {
   Monitor,
   Pencil,
   Plus,
+  Presentation,
   RefreshCw,
   Scissors,
   Terminal,
@@ -70,6 +71,7 @@ function getFileIcon(name: string, isDir: boolean, path?: string, variant: 'grid
   const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'm4v'];
   const pdfExts = ['pdf'];
   const wordExts = ['doc', 'docx'];
+  const presentationExts = ['ppt', 'pptx'];
   const spreadsheetExts = ['xls', 'xlsx', 'csv'];
   
   if (imageExts.includes(ext) && path) {
@@ -93,6 +95,7 @@ function getFileIcon(name: string, isDir: boolean, path?: string, variant: 'grid
   if (videoExts.includes(ext)) return renderBadgedIcon(<File className={`${iconSizeClass} text-rose-400/80 group-hover:text-rose-400 transition-colors`} />, 'VID', 'bg-rose-500/90');
   if (pdfExts.includes(ext)) return renderBadgedIcon(<FileText className={`${iconSizeClass} text-red-400/80 group-hover:text-red-400 transition-colors`} />, 'PDF', 'bg-red-500/90');
   if (wordExts.includes(ext)) return renderBadgedIcon(<FileText className={`${iconSizeClass} text-blue-400/80 group-hover:text-blue-400 transition-colors`} />, 'DOC', 'bg-blue-500/90');
+  if (presentationExts.includes(ext)) return renderBadgedIcon(<Presentation className={`${iconSizeClass} text-orange-400/80 group-hover:text-orange-400 transition-colors`} />, 'PPT', 'bg-orange-500/90');
   if (spreadsheetExts.includes(ext)) return renderBadgedIcon(<FileSpreadsheet className={`${iconSizeClass} text-emerald-400/80 group-hover:text-emerald-400 transition-colors`} />, 'XLS', 'bg-emerald-500/90');
   if (imageExts.includes(ext)) return <FileImage className={`${iconSizeClass} text-purple-400/80 group-hover:text-purple-400 transition-colors`} />;
   if (archiveExts.includes(ext)) return <FileArchive className={`${iconSizeClass} text-orange-400/80 group-hover:text-orange-400 transition-colors`} />;
@@ -308,7 +311,7 @@ export default function FileManager({ actions }: AppComponentProps) {
       const videoExts = ['mp4', 'webm', 'ogg', 'mov', 'm4v'];
       const archiveExts = ['zip', 'tar', 'gz', 'xz', 'bz2', 'tgz', 'txz', 'tbz', 'tbz2'];
       const compoundArchiveExts = ['.tar.gz', '.tar.xz', '.tar.bz2'];
-      const documentExts = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv'];
+      const documentExts = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'csv', 'ppt', 'pptx'];
       const isImage = imageExts.includes(ext);
       const isVideo = videoExts.includes(ext);
       const isArchive = archiveExts.includes(ext) || compoundArchiveExts.some(e => lowerName.endsWith(e));

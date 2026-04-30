@@ -42,7 +42,7 @@ FROM debian:bookworm-slim
 
 ARG DEBIAN_MIRROR=http://mirrors.ustc.edu.cn/debian
 ARG DEBIAN_SECURITY_MIRROR=http://mirrors.ustc.edu.cn/debian-security
-ARG APT_PACKAGES="bash ca-certificates curl net-tools procps vim wget"
+ARG APT_PACKAGES="bash ca-certificates curl fonts-dejavu fonts-liberation fonts-noto-cjk libreoffice libreoffice-impress net-tools procps vim wget"
 
 ENV APT_PACKAGES=${APT_PACKAGES}
 

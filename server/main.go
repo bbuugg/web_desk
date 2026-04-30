@@ -44,6 +44,7 @@ func main() {
 		// HTTP endpoint for file uploads (multipart, multiple files)
 		api.POST("/files/upload", handler.UploadFiles)
 		api.POST("/files/upload-url", handler.UploadURL)
+		api.POST("/files/preview-pdf", handler.ConvertOfficePreview)
 
 		// WebSocket endpoint for terminal
 		api.GET("/ws/terminal", handler.TerminalWS)

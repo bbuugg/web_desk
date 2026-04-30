@@ -13,12 +13,13 @@ type DocumentState =
   | { kind: 'idle' }
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'pdf'; url: string }
+  | { kind: 'pdf'; path: string; source: 'file' | 'converted' }
   | { kind: 'docx'; html: string }
   | { kind: 'spreadsheet'; workbook: XLSX.WorkBook; sheetName: string };
 
 const SUPPORTED_SPREADSHEET_EXTS = new Set(['xls', 'xlsx', 'csv']);
 const SUPPORTED_WORD_EXTS = new Set(['doc', 'docx']);
+const SUPPORTED_PRESENTATION_EXTS = new Set(['ppt', 'pptx']);
 
 function getFileName(path: string) {
   if (!path) return 'document';
@@ -30,6 +31,7 @@ function getExtension(path: string) {
 }
 
 const API_URL = '/api/files/content';
+const PREVIEW_PDF_URL = '/api/files/preview-pdf';
 
 async function fetchFileContent(path: string): Promise<ArrayBuffer> {
   const resp = await fetch(API_URL, {
@@ -39,6 +41,19 @@ async function fetchFileContent(path: string): Promise<ArrayBuffer> {
   });
   if (!resp.ok) {
     throw new Error(`Failed to load document (${resp.status})`);
+  }
+  return resp.arrayBuffer();
+}
+
+async function fetchConvertedPdf(path: string): Promise<ArrayBuffer> {
+  const resp = await fetch(PREVIEW_PDF_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({ error: `Failed to convert document (${resp.status})` }));
+    throw new Error(body.error || `Failed to convert document (${resp.status})`);
   }
   return resp.arrayBuffer();
 }
@@ -62,7 +77,7 @@ async function downloadFile(path: string) {
   URL.revokeObjectURL(url);
 }
 
-function PdfPreview({ path }: { path: string }) {
+function PdfPreview({ path, source }: { path: string; source: 'file' | 'converted' }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +95,7 @@ function PdfPreview({ path }: { path: string }) {
       container.innerHTML = '';
 
       try {
-        const buffer = await fetchFileContent(path);
+        const buffer = source === 'converted' ? await fetchConvertedPdf(path) : await fetchFileContent(path);
         if (cancelled) return;
 
         const blob = new Blob([buffer], { type: 'application/pdf' });
@@ -143,7 +158,7 @@ function PdfPreview({ path }: { path: string }) {
         container.innerHTML = '';
       }
     };
-  }, [path]);
+  }, [path, source]);
 
   if (error) {
     return (
@@ -185,7 +200,12 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
     }
 
     if (extension === 'pdf') {
-      setState({ kind: 'pdf', url: path });
+      setState({ kind: 'pdf', path, source: 'file' });
+      return;
+    }
+
+    if (SUPPORTED_PRESENTATION_EXTS.has(extension)) {
+      setState({ kind: 'pdf', path, source: 'converted' });
       return;
     }
 
@@ -313,7 +333,7 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
     }
 
     if (state.kind === 'pdf') {
-      return <PdfPreview path={state.url} />;
+      return <PdfPreview path={state.path} source={state.source} />;
     }
 
     if (state.kind === 'docx') {
