@@ -174,7 +174,6 @@ function PdfPreview({ path, source }: { path: string; source: 'file' | 'converte
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[#11161f]/85 text-gray-400">
           <div className="flex items-center gap-2">
             <Loader2 className="h-5 w-5 animate-spin" />
-            Rendering PDF...
           </div>
         </div>
       )}
