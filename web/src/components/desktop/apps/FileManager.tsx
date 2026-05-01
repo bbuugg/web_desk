@@ -1252,7 +1252,7 @@ export default function FileManager({ actions }: AppComponentProps) {
           title={deleteConfirmBulk.length === 1 ? `Delete: ${deleteConfirmBulk[0].name}` : `Delete ${deleteConfirmBulk.length} items`} 
           onClose={() => setDeleteConfirmBulk(null)}
         >
-          <p className="text-sm text-gray-400">
+          <p className="text-sm text-gray-400 break-word">
             {deleteConfirmBulk.length === 1 ? (
               <>
                 Are you sure you want to delete <strong className="text-white">{deleteConfirmBulk[0].name}</strong>?
@@ -1437,7 +1437,7 @@ function Dialog({ title, children, onClose }: { title: string; children: React.R
       }}
     >
       <div className="bg-[#161b22] border border-white/10 rounded-xl p-4 w-80 shadow-2xl" onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()}>
-        <h3 className="text-sm font-semibold mb-3 text-gray-200">{title}</h3>
+        <h3 className="text-sm font-semibold mb-3 text-gray-200 break-word">{title}</h3>
         {children}
       </div>
     </div>
