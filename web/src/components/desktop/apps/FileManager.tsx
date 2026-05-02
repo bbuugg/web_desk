@@ -741,7 +741,7 @@ export default function FileManager({ actions }: AppComponentProps) {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selected, files, handleCopy, handleCut, handlePaste]);
+  }, [selected, files, handleCopy, handleCut, handlePaste, pasteProgress]);
 
   // Breadcrumb
   const breadcrumb = getBreadcrumbModel(currentPath);
@@ -1436,7 +1436,7 @@ export default function FileManager({ actions }: AppComponentProps) {
 
 // --- Sub-components ---
 
-function PasteProgressBar({ progress }: {
+function PasteProgressDialog({ progress }: {
   progress: {
     mode: 'copy' | 'cut';
     index: number;
@@ -1452,22 +1452,37 @@ function PasteProgressBar({ progress }: {
   const inFlightFraction = innerTotal > 0 ? innerDone / innerTotal : 0;
   const overall = total > 0 ? Math.min(100, Math.round(((index - 1 + inFlightFraction) / total) * 100)) : 0;
   const verb = mode === 'cut' ? 'Moving' : 'Copying';
-  const innerLabel = innerTotal > 1 ? ` · ${innerDone}/${innerTotal} files` : '';
+  const innerLabel = innerTotal > 1 ? `${innerDone} / ${innerTotal} files` : '';
   return (
-    <div className="mb-3 px-3 py-2 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-emerald-200 text-xs">
-      <div className="flex items-center gap-2">
-        <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
-        <span className="font-medium">{verb}</span>
-        <span className="truncate">{currentName}</span>
-        <span className="ml-auto text-gray-400 shrink-0">
-          {index}/{total}{innerLabel}
-        </span>
-      </div>
-      <div className="mt-1.5 h-1 w-full rounded-full bg-white/5 overflow-hidden">
-        <div
-          className="h-full bg-emerald-400/70 transition-[width] duration-150"
-          style={{ width: `${overall}%` }}
-        />
+    <div
+      className="absolute inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      // Swallow every interaction so nothing behind the modal responds
+      // while the paste/move is in flight.
+      onMouseDown={e => { e.preventDefault(); e.stopPropagation(); }}
+      onMouseUp={e => { e.preventDefault(); e.stopPropagation(); }}
+      onClick={e => { e.preventDefault(); e.stopPropagation(); }}
+      onContextMenu={e => { e.preventDefault(); e.stopPropagation(); }}
+    >
+      <div
+        className="bg-[#161b22] border border-white/10 rounded-xl p-4 w-96 shadow-2xl"
+        onMouseDown={e => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 mb-3">
+          <Loader2 className="w-4 h-4 shrink-0 animate-spin text-emerald-400" />
+          <h3 className="text-sm font-semibold text-gray-200">{verb}…</h3>
+          <span className="ml-auto text-xs text-gray-500">{index} / {total}</span>
+        </div>
+        <div className="text-xs text-gray-400 mb-2 truncate" title={currentName}>{currentName}</div>
+        <div className="h-1.5 w-full rounded-full bg-white/5 overflow-hidden">
+          <div
+            className="h-full bg-emerald-400/80 transition-[width] duration-150"
+            style={{ width: `${overall}%` }}
+          />
+        </div>
+        <div className="mt-2 flex items-center justify-between text-[11px] text-gray-500">
+          <span>{innerLabel}</span>
+          <span>{overall}%</span>
+        </div>
       </div>
     </div>
   );

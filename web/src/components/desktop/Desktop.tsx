@@ -219,7 +219,7 @@ export default function Desktop() {
             {bootState === 'password' ? (
               <form className="w-[min(92vw,360px)] space-y-4" onSubmit={handlePasswordSubmit}>
                 <div className="space-y-2 text-center">
-                  <div className="text-lg font-medium tracking-wide text-white">输入开机密码</div>
+                  <div className="text-lg font-medium tracking-wide text-white">输入密码</div>
                   <div className="text-xs text-gray-500">登录后 7 天内刷新无需再次输入</div>
                 </div>
 
