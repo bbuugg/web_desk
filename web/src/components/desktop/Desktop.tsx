@@ -153,11 +153,10 @@ export default function Desktop() {
   const handlePasswordSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!password.trim()) {
-      setPasswordError('请输入密码');
+      toast.error('请输入密码');
       return;
     }
 
-    setPasswordError('');
     setPasswordSubmitting(true);
 
     try {
@@ -176,7 +175,7 @@ export default function Desktop() {
       await loadWallpaper();
       finishBoot();
     } catch {
-      setPasswordError('密码错误，请重试');
+      toast.error('密码错误，请重试');
     } finally {
       setPasswordSubmitting(false);
     }
@@ -191,7 +190,6 @@ export default function Desktop() {
       revealTimerRef.current = null;
     }
     setPassword('');
-    setPasswordError('');
     setBootError('');
     setSecurityStatus(prev => ({ ...prev, authenticated: false }));
     setBootState('password');
@@ -238,14 +236,9 @@ export default function Desktop() {
                   type="password"
                   value={password}
                   placeholder="密码"
-                  onChange={e => {
-                    setPassword(e.target.value);
-                    setPasswordError('');
-                  }}
+                  onChange={e => setPassword(e.target.value)}
                   disabled={passwordSubmitting}
                 />
-
-                {passwordError && <div className="text-center text-xs text-red-400">{passwordError}</div>}
 
                 <Button className="w-full" type="submit" disabled={passwordSubmitting}>
                   {passwordSubmitting ? (

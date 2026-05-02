@@ -5,6 +5,7 @@ import type { AppComponentProps } from '@/types/desktop';
 import { FileManagerClient, type FileInfo } from '@/lib/ws-client';
 import FolderPicker from '@/components/desktop/FolderPicker';
 import { getParentPath } from '@/lib/path-utils';
+import { formatSize } from '@/lib/utils';
 
 export default function ArchiveViewer({ windowId, actions, appState }: AppComponentProps) {
   const [allFiles, setAllFiles] = useState<FileInfo[]>([]);
@@ -372,10 +373,3 @@ export default function ArchiveViewer({ windowId, actions, appState }: AppCompon
   );
 }
 
-function formatSize(bytes: number) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}

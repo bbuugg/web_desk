@@ -8,6 +8,7 @@ import {
 import { useIsMobile } from '@/hooks/use-mobile';
 import { getBreadcrumbModel, getParentPath, joinPath } from '@/lib/path-utils';
 import { FileManagerClient, type FileInfo, type ProgressInfo } from '@/lib/ws-client';
+import { formatSize } from '@/lib/utils';
 import type { AppComponentProps } from '@/types/desktop';
 import {
   AlertCircle,
@@ -101,13 +102,6 @@ function getFileIcon(name: string, isDir: boolean, path?: string, variant: 'grid
   if (archiveExts.includes(ext)) return <FileArchive className={`${iconSizeClass} text-orange-400/80 group-hover:text-orange-400 transition-colors`} />;
   if (textExts.includes(ext)) return <FileText className={`${iconSizeClass} text-emerald-400/80 group-hover:text-emerald-400 transition-colors`} />;
   return <File className={`${iconSizeClass} text-gray-500 group-hover:text-gray-400 transition-colors`} />;
-}
-
-function formatSize(bytes: number): string {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
 function formatTime(ms: number): string {
