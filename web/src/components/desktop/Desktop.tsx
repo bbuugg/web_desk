@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/context-menu';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { toast } from 'sonner';
 import { Lock, Loader2, RefreshCw, Upload } from 'lucide-react';
 
 type BootState = 'checking' | 'password' | 'error' | 'ready';
@@ -40,7 +41,6 @@ export default function Desktop() {
   const [bootError, setBootError] = useState('');
   const [securityStatus, setSecurityStatus] = useState<SecurityStatus>(defaultSecurityStatus);
   const [password, setPassword] = useState('');
-  const [passwordError, setPasswordError] = useState('');
   const [passwordSubmitting, setPasswordSubmitting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const revealTimerRef = useRef<number | null>(null);
@@ -70,7 +70,6 @@ export default function Desktop() {
 
   const loadBootstrap = useCallback(async () => {
     setBootError('');
-    setPasswordError('');
     setPassword('');
     setShowLoader(true);
     setIsLoaded(false);

@@ -6,6 +6,13 @@ import {
 import { Button } from '../../ui/button';
 import { toast } from 'sonner';
 
+function formatSize(bytes: number): string {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
 interface UploadItem {
   id: string;
   name: string;
@@ -237,8 +244,13 @@ export default function UploadDialog({ currentPath, initialFiles = [], onClose, 
                       {item.type === 'url' ? <Globe className="w-4 h-4" /> : <File className="w-4 h-4" />}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm font-medium text-gray-200 truncate">{item.name}</span>
+                      <div className="flex items-center justify-between mb-1 gap-2">
+                        <div className="flex items-baseline gap-2 min-w-0">
+                          <span className="text-sm font-medium text-gray-200 truncate">{item.name}</span>
+                          {item.type === 'file' && item.file && (
+                            <span className="text-xs text-gray-500 shrink-0">{formatSize(item.file.size)}</span>
+                          )}
+                        </div>
                         <div className="flex items-center gap-2">
                           {item.status === 'uploading' && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-400" />}
                           {item.status === 'completed' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}

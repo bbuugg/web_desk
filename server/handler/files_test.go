@@ -69,3 +69,74 @@ func TestUploadFilesReturnsUploadedList(t *testing.T) {
 		t.Fatalf("expected uploaded file at %s: %v", savedPath, err)
 	}
 }
+
+func TestTrashStampRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		"foo.txt",
+		"report.tar.gz",
+		"no-extension",
+		".bashrc",
+		".env.local",
+		"contains__trash_999_in_name.txt",
+	}
+	for _, name := range cases {
+		stamped := addTrashStamp(name)
+		if stamped == name {
+			t.Errorf("addTrashStamp(%q) was a no-op", name)
+		}
+		got := stripTrashStamp(stamped)
+		if got != name {
+			t.Errorf("round trip for %q: stamped=%q, stripped=%q", name, stamped, got)
+		}
+	}
+}
+
+func TestStripTrashStampLeavesUnstampedNamesAlone(t *testing.T) {
+	t.Parallel()
+
+	cases := []string{
+		"foo.txt",
+		"report.tar.gz",
+		".bashrc",
+		"trailing__trash_.txt",     // empty digit run — not a real stamp
+		"prefix__trash_abc.txt",    // non-digit suffix — not a real stamp
+		"middle__trash_123_in.txt", // stamp not at end of base — not stripped
+	}
+	for _, name := range cases {
+		if got := stripTrashStamp(name); got != name {
+			t.Errorf("stripTrashStamp(%q) should be a no-op, got %q", name, got)
+		}
+	}
+}
+
+func TestUniqueRestorePathSuffixesOnConflict(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	base := filepath.Join(dir, "report.txt")
+
+	// No conflict: returns original.
+	if got := uniqueRestorePath(base); got != base {
+		t.Errorf("expected %q for empty dir, got %q", base, got)
+	}
+
+	// Create the original; expect "report (1).txt".
+	if err := os.WriteFile(base, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	want1 := filepath.Join(dir, "report (1).txt")
+	if got := uniqueRestorePath(base); got != want1 {
+		t.Errorf("expected %q, got %q", want1, got)
+	}
+
+	// Create the (1); expect "report (2).txt".
+	if err := os.WriteFile(want1, []byte("x"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	want2 := filepath.Join(dir, "report (2).txt")
+	if got := uniqueRestorePath(base); got != want2 {
+		t.Errorf("expected %q, got %q", want2, got)
+	}
+}
