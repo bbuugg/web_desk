@@ -31,12 +31,30 @@ type WSResponse = {
   ok: boolean;
   error?: string;
   data?: unknown;
+  progress?: boolean;
+};
+
+// Generic streaming-progress payload. Done/Total are in caller-defined
+// units (file count, items processed, etc.); current is the item being
+// worked on when the update was emitted, when meaningful.
+export type ProgressInfo = {
+  done: number;
+  total: number;
+  current?: string;
 };
 
 type PendingRequest = {
   resolve: (data: unknown) => void;
   reject: (error: Error) => void;
+  onProgress?: (p: ProgressInfo) => void;
+  resetIdle: () => void;
+  cancelIdle: () => void;
 };
+
+// Idle timeout: a request is rejected only if no message (response or
+// progress) arrives within this window. Long copies stay alive as long as
+// progress flows.
+const IDLE_TIMEOUT_MS = 30000;
 
 export class FileManagerClient {
   private ws: WebSocket | null = null;
@@ -72,6 +90,7 @@ export class FileManagerClient {
         console.log('[FileManager WS] Disconnected');
         this.onStatusChange?.(false);
         for (const [, p] of this.pending) {
+          p.cancelIdle();
           p.reject(new Error('WebSocket disconnected'));
         }
         this.pending.clear();
@@ -89,13 +108,22 @@ export class FileManagerClient {
         try {
           const resp: WSResponse = JSON.parse(event.data);
           const p = this.pending.get(resp.id);
-          if (p) {
-            this.pending.delete(resp.id);
-            if (resp.ok) {
-              p.resolve(resp.data);
-            } else {
-              p.reject(new Error(resp.error || 'Unknown error'));
+          if (!p) return;
+
+          if (resp.progress) {
+            p.resetIdle();
+            if (p.onProgress) {
+              p.onProgress((resp.data as ProgressInfo) ?? { done: 0, total: 0 });
             }
+            return;
+          }
+
+          this.pending.delete(resp.id);
+          p.cancelIdle();
+          if (resp.ok) {
+            p.resolve(resp.data);
+          } else {
+            p.reject(new Error(resp.error || 'Unknown error'));
           }
         } catch (e) {
           console.error('[FileManager WS] Parse error:', e);
@@ -110,7 +138,11 @@ export class FileManagerClient {
     this.ws?.close();
   }
 
-  private send<T>(action: string, data: unknown): Promise<T> {
+  private send<T>(
+    action: string,
+    data: unknown,
+    onProgress?: (p: ProgressInfo) => void,
+  ): Promise<T> {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         reject(new Error('WebSocket not connected'));
@@ -118,20 +150,35 @@ export class FileManagerClient {
       }
 
       const id = createWsMessageId();
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const cancelIdle = () => {
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      };
+
+      const resetIdle = () => {
+        cancelIdle();
+        timer = setTimeout(() => {
+          if (this.pending.has(id)) {
+            this.pending.delete(id);
+            reject(new Error('Request timeout'));
+          }
+        }, IDLE_TIMEOUT_MS);
+      };
+
       this.pending.set(id, {
         resolve: resolve as (d: unknown) => void,
         reject,
+        onProgress,
+        resetIdle,
+        cancelIdle,
       });
 
       this.ws.send(JSON.stringify({ id, action, data }));
-
-      // Timeout after 15s
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new Error('Request timeout'));
-        }
-      }, 15000);
+      resetIdle();
     });
   }
 
@@ -165,12 +212,20 @@ export class FileManagerClient {
     return this.send('rename', { oldPath, newPath });
   }
 
-  copy(src: string, dst: string): Promise<{ src: string; dst: string }> {
-    return this.send('copy', { src, dst });
+  copy(
+    src: string,
+    dst: string,
+    onProgress?: (p: ProgressInfo) => void,
+  ): Promise<{ src: string; dst: string }> {
+    return this.send('copy', { src, dst }, onProgress);
   }
 
-  move(src: string, dst: string): Promise<{ src: string; dst: string }> {
-    return this.send('move', { src, dst });
+  move(
+    src: string,
+    dst: string,
+    onProgress?: (p: ProgressInfo) => void,
+  ): Promise<{ src: string; dst: string }> {
+    return this.send('move', { src, dst }, onProgress);
   }
 
   stat(path: string): Promise<FileInfo> {

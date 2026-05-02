@@ -1,6 +1,10 @@
 package handler
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,14 +35,16 @@ type WallpaperConfig struct {
 	Path string `json:"path"`
 }
 
+const authCacheDays = 7
 const defaultDetachTTLMinutes = 10
 
 var (
-	configMu       sync.RWMutex
-	currentTermCfg TerminalConfig
-	currentMappings []PortMapping
+	configMu         sync.RWMutex
+	currentTermCfg   TerminalConfig
+	currentMappings  []PortMapping
 	currentWallpaper string
-	configPath     string
+	currentSecurity  SecurityConfig
+	configPath       string
 
 	activeListeners = make(map[string]net.Listener)
 )
@@ -50,10 +56,25 @@ type PortMapping struct {
 	TargetPort int    `json:"targetPort"`
 }
 
+type SecurityConfig struct {
+	PasswordHash string `json:"passwordHash,omitempty"`
+	PasswordSalt string `json:"passwordSalt,omitempty"`
+}
+
+type SecurityStatus struct {
+	PasswordEnabled bool `json:"passwordEnabled"`
+	LoginTtlDays    int  `json:"loginTtlDays"`
+}
+
+type SecurityPasswordRequest struct {
+	Password string `json:"password"`
+}
+
 type persistedConfig struct {
 	Terminal     *TerminalConfig `json:"terminal,omitempty"`
 	PortMappings []PortMapping   `json:"portMappings,omitempty"`
 	Wallpaper    string          `json:"wallpaper,omitempty"`
+	Security     *SecurityConfig `json:"security,omitempty"`
 }
 
 func init() {
@@ -70,6 +91,9 @@ func loadConfig() {
 
 	def := defaultDetachTTLMinutes
 	currentTermCfg = TerminalConfig{DetachTTLMinutes: &def, CopyOnSelect: true}
+	currentMappings = nil
+	currentWallpaper = "/wallpaper.png"
+	currentSecurity = SecurityConfig{}
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -88,6 +112,9 @@ func loadConfig() {
 	}
 	currentMappings = p.PortMappings
 	currentWallpaper = p.Wallpaper
+	if p.Security != nil {
+		currentSecurity = *p.Security
+	}
 	if currentWallpaper == "" {
 		currentWallpaper = "/wallpaper.png" // Default
 	}
@@ -143,6 +170,7 @@ func saveConfigLocked() error {
 		Terminal:     &currentTermCfg,
 		PortMappings: currentMappings,
 		Wallpaper:    currentWallpaper,
+		Security:     &currentSecurity,
 	}
 	data, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
@@ -173,6 +201,107 @@ func GetTerminalConfig(c *gin.Context) {
 	cfg := currentTermCfg
 	configMu.RUnlock()
 	c.JSON(http.StatusOK, cfg)
+}
+
+func isPasswordEnabledLocked() bool {
+	return currentSecurity.PasswordHash != "" && currentSecurity.PasswordSalt != ""
+}
+
+func hashPassword(password, salt string) string {
+	sum := sha256.Sum256([]byte(salt + password))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func generateSalt() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(buf), nil
+}
+
+func verifyPasswordLocked(password string) bool {
+	if !isPasswordEnabledLocked() {
+		return true
+	}
+	expected := hashPassword(password, currentSecurity.PasswordSalt)
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(currentSecurity.PasswordHash)) == 1
+}
+
+// GetSecurityConfig returns whether boot password protection is enabled.
+func GetSecurityConfig(c *gin.Context) {
+	configMu.RLock()
+	status := SecurityStatus{
+		PasswordEnabled: isPasswordEnabledLocked(),
+		LoginTtlDays:    authCacheDays,
+	}
+	configMu.RUnlock()
+	c.JSON(http.StatusOK, status)
+}
+
+// VerifySecurityPassword checks a plaintext password against the stored hash.
+func VerifySecurityPassword(c *gin.Context) {
+	var in SecurityPasswordRequest
+	if err := c.BindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	configMu.RLock()
+	enabled := isPasswordEnabledLocked()
+	ok := verifyPasswordLocked(in.Password)
+	configMu.RUnlock()
+
+	if !enabled {
+		c.JSON(http.StatusOK, gin.H{"ok": true, "passwordEnabled": false, "loginTtlDays": authCacheDays})
+		return
+	}
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"ok": false, "error": "invalid password"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "passwordEnabled": true, "loginTtlDays": authCacheDays})
+}
+
+// UpdateSecurityPassword sets or clears the boot password.
+func UpdateSecurityPassword(c *gin.Context) {
+	var in SecurityPasswordRequest
+	if err := c.BindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+
+	configMu.Lock()
+	defer configMu.Unlock()
+
+	if in.Password == "" {
+		currentSecurity = SecurityConfig{}
+		if err := saveConfigLocked(); err != nil {
+			log.Println("Config save error:", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "passwordEnabled": false, "loginTtlDays": authCacheDays})
+		return
+	}
+
+	salt, err := generateSalt()
+	if err != nil {
+		log.Println("Salt generation error:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate salt"})
+		return
+	}
+
+	currentSecurity = SecurityConfig{
+		PasswordSalt: salt,
+		PasswordHash: hashPassword(in.Password, salt),
+	}
+	if err := saveConfigLocked(); err != nil {
+		log.Println("Config save error:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "passwordEnabled": true, "loginTtlDays": authCacheDays})
 }
 
 // UpdateTerminalConfig validates the body, persists it, then re-applies the

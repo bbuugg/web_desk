@@ -19,7 +19,7 @@ func main() {
 	// CORS middleware
 	r.Use(func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -66,6 +66,11 @@ func main() {
 		api.GET("/config/wallpaper", handler.GetWallpaper)
 		api.POST("/config/wallpaper", handler.UploadWallpaper)
 		api.Static("/wallpaper/raw", "./uploads/wallpapers")
+
+		// Boot password configuration
+		api.GET("/config/security", handler.GetSecurityConfig)
+		api.POST("/config/security/verify", handler.VerifySecurityPassword)
+		api.PUT("/config/security/password", handler.UpdateSecurityPassword)
 	}
 
 	if staticDir, err := resolveStaticDir(); err != nil {

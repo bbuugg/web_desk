@@ -37,12 +37,25 @@ type WSRequest struct {
 	Data   json.RawMessage `json:"data"`
 }
 
-// Response to client
+// Response to client. When Progress is true, the message is a streamed
+// intermediate update for an in-flight request — the client should keep the
+// pending entry alive instead of resolving it. Final messages always have
+// Progress == false.
 type WSResponse struct {
-	ID    string      `json:"id"`
-	OK    bool        `json:"ok"`
-	Error string      `json:"error,omitempty"`
-	Data  interface{} `json:"data,omitempty"`
+	ID       string      `json:"id"`
+	OK       bool        `json:"ok"`
+	Error    string      `json:"error,omitempty"`
+	Data     interface{} `json:"data,omitempty"`
+	Progress bool        `json:"progress,omitempty"`
+}
+
+// ProgressData is the generic payload for progress updates. Done/Total are
+// in caller-defined units (e.g. file count); Current is the item being
+// processed when the update was emitted, if meaningful.
+type ProgressData struct {
+	Done    int    `json:"done"`
+	Total   int    `json:"total"`
+	Current string `json:"current,omitempty"`
 }
 
 // --- Data structures ---
@@ -410,7 +423,7 @@ func handleDelete(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		dst = fmt.Sprintf("%s_%d%s", base, time.Now().Unix(), ext)
 	}
 
-	if err := moveFileOrDir(src, dst); err != nil {
+	if err := moveFileOrDir(src, dst, nil); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot move to trash: %s", err.Error()))
 		return
 	}
@@ -464,7 +477,7 @@ func handleRestore(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		return
 	}
 
-	if err := moveFileOrDir(trashPath, originalPath); err != nil {
+	if err := moveFileOrDir(trashPath, originalPath, nil); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot restore file: %s", err.Error()))
 		return
 	}
@@ -805,10 +818,20 @@ func handleCopy(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 	src := cleanPath(data.Src)
 	dst := cleanPath(data.Dst)
 
-	if err := copyFileOrDir(src, dst); err != nil {
+	if _, err := os.Stat(dst); err == nil {
+		sendError(conn, mu, req.ID, fmt.Sprintf("Destination already exists: %s", dst))
+		return
+	}
+
+	total, _ := countFiles(src)
+	tracker := newProgressTracker(conn, mu, req.ID, total)
+
+	if err := copyFileOrDir(src, dst, tracker); err != nil {
+		os.RemoveAll(dst)
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot copy: %s", err.Error()))
 		return
 	}
+	tracker.flush()
 
 	sendSuccess(conn, mu, req.ID, gin.H{"src": src, "dst": dst})
 }
@@ -823,10 +846,21 @@ func handleMove(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 	src := cleanPath(data.Src)
 	dst := cleanPath(data.Dst)
 
-	if err := moveFileOrDir(src, dst); err != nil {
+	if _, err := os.Stat(dst); err == nil {
+		sendError(conn, mu, req.ID, fmt.Sprintf("Destination already exists: %s", dst))
+		return
+	}
+
+	// Walk the tree once up-front for a stable Total. Wasted on the rename
+	// fast path (instant), but cheap relative to the copy fallback.
+	total, _ := countFiles(src)
+	tracker := newProgressTracker(conn, mu, req.ID, total)
+
+	if err := moveFileOrDir(src, dst, tracker); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot move: %s", err.Error()))
 		return
 	}
+	tracker.flush()
 
 	sendSuccess(conn, mu, req.ID, gin.H{"src": src, "dst": dst})
 }
@@ -924,25 +958,94 @@ func sendError(conn *websocket.Conn, mu *sync.Mutex, id string, errMsg string) {
 	}
 }
 
-func copyFileOrDir(src, dst string) error {
+func sendProgress(conn *websocket.Conn, mu *sync.Mutex, id string, done, total int, current string) {
+	resp := WSResponse{
+		ID:       id,
+		OK:       true,
+		Progress: true,
+		Data:     ProgressData{Done: done, Total: total, Current: current},
+	}
+	b, _ := json.Marshal(resp)
+	mu.Lock()
+	defer mu.Unlock()
+	if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+		log.Println("WebSocket write error:", err)
+	}
+}
+
+// progressTracker counts completed regular files and throttles outbound
+// messages to ~5/sec. A nil tracker is a valid no-op.
+type progressTracker struct {
+	conn     *websocket.Conn
+	mu       *sync.Mutex
+	id       string
+	total    int
+	done     int
+	lastEmit time.Time
+}
+
+func newProgressTracker(conn *websocket.Conn, mu *sync.Mutex, id string, total int) *progressTracker {
+	return &progressTracker{conn: conn, mu: mu, id: id, total: total}
+}
+
+// tick records that one more file finished. current is the source path of
+// that file, used to label the update on the client.
+func (p *progressTracker) tick(current string) {
+	if p == nil {
+		return
+	}
+	p.done++
+	now := time.Now()
+	if now.Sub(p.lastEmit) >= 200*time.Millisecond {
+		p.lastEmit = now
+		sendProgress(p.conn, p.mu, p.id, p.done, p.total, current)
+	}
+}
+
+func (p *progressTracker) flush() {
+	if p == nil {
+		return
+	}
+	sendProgress(p.conn, p.mu, p.id, p.done, p.total, "")
+}
+
+// countFiles returns the number of regular files reachable from path.
+// Symlink targets are not followed. A regular file at path counts as 1.
+func countFiles(path string) (int, error) {
+	var n int
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			n++
+		}
+		return nil
+	})
+	return n, err
+}
+
+func copyFileOrDir(src, dst string, tracker *progressTracker) error {
 	info, err := os.Stat(src)
 	if err != nil {
 		return err
 	}
 
 	if info.IsDir() {
-		return copyDir(src, dst)
+		return copyDir(src, dst, tracker)
 	}
-	return copyFile(src, dst)
+	return copyFile(src, dst, tracker)
 }
 
 // moveFileOrDir attempts a fast os.Rename and falls back to copy+remove when
-// rename fails (e.g. cross-volume moves on Windows, EXDEV on Unix).
-func moveFileOrDir(src, dst string) error {
+// rename fails (e.g. cross-volume moves on Windows, EXDEV on Unix). The
+// rename fast path skips progress entirely; the fallback streams progress
+// through tracker if provided.
+func moveFileOrDir(src, dst string, tracker *progressTracker) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
 	}
-	if err := copyFileOrDir(src, dst); err != nil {
+	if err := copyFileOrDir(src, dst, tracker); err != nil {
 		os.RemoveAll(dst)
 		return err
 	}
@@ -952,7 +1055,7 @@ func moveFileOrDir(src, dst string) error {
 	return nil
 }
 
-func copyFile(src, dst string) error {
+func copyFile(src, dst string, tracker *progressTracker) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -970,12 +1073,15 @@ func copyFile(src, dst string) error {
 	}
 
 	info, _ := os.Stat(src)
-	os.Chmod(dst, info.Mode())
-	os.Chtimes(dst, time.Now(), info.ModTime())
+	if info != nil {
+		os.Chmod(dst, info.Mode())
+		os.Chtimes(dst, time.Now(), info.ModTime())
+	}
+	tracker.tick(src)
 	return nil
 }
 
-func copyDir(src, dst string) error {
+func copyDir(src, dst string, tracker *progressTracker) error {
 	srcInfo, err := os.Stat(src)
 	if err != nil {
 		return err
@@ -994,7 +1100,7 @@ func copyDir(src, dst string) error {
 		srcPath := filepath.Join(src, entry.Name())
 		dstPath := filepath.Join(dst, entry.Name())
 
-		if err := copyFileOrDir(srcPath, dstPath); err != nil {
+		if err := copyFileOrDir(srcPath, dstPath, tracker); err != nil {
 			return err
 		}
 	}

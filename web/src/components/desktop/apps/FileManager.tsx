@@ -7,7 +7,7 @@ import {
 } from "@/components/ui/context-menu";
 import { useIsMobile } from '@/hooks/use-mobile';
 import { getBreadcrumbModel, getParentPath, joinPath } from '@/lib/path-utils';
-import { FileManagerClient, type FileInfo } from '@/lib/ws-client';
+import { FileManagerClient, type FileInfo, type ProgressInfo } from '@/lib/ws-client';
 import type { AppComponentProps } from '@/types/desktop';
 import {
   AlertCircle,
@@ -166,6 +166,14 @@ export default function FileManager({ actions }: AppComponentProps) {
   const [compressDialog, setCompressDialog] = useState<string[] | null>(null);
   const [compressName, setCompressName] = useState('');
   const [clipboard, setClipboard] = useState<{ paths: string[], mode: 'copy' | 'cut' } | null>(null);
+  const [pasteProgress, setPasteProgress] = useState<{
+    mode: 'copy' | 'cut';
+    index: number;        // 1-based index of clipboard item being processed
+    total: number;        // total clipboard items
+    currentName: string;  // basename of current clipboard item
+    innerDone: number;    // files completed inside current item (0 until backend reports)
+    innerTotal: number;   // total files inside current item (0 if unknown)
+  } | null>(null);
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const [uploadDialogInitialFiles, setUploadDialogInitialFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
@@ -390,7 +398,7 @@ export default function FileManager({ actions }: AppComponentProps) {
     }
 
     // Prevent selection if any dialog is open
-    if (renameTarget || batchRenameTargets || createDialog || compressDialog || deleteConfirmBulk || emptyTrashConfirm) return;
+    if (renameTarget || batchRenameTargets || createDialog || compressDialog || deleteConfirmBulk || emptyTrashConfirm || pasteProgress) return;
 
     // Only left click on background starts drag selection
     if (e.button !== 0 || (e.target as HTMLElement).closest('.file-item')) return;
@@ -412,7 +420,7 @@ export default function FileManager({ actions }: AppComponentProps) {
       setSelected(new Set());
       setLastSelectedPath(null);
     }
-  }, [renameTarget, batchRenameTargets, createDialog, compressDialog, deleteConfirmBulk, emptyTrashConfirm, swallowSuppressedInteraction]);
+  }, [renameTarget, batchRenameTargets, createDialog, compressDialog, deleteConfirmBulk, emptyTrashConfirm, pasteProgress, swallowSuppressedInteraction]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     if (!selectionBox || !containerRef.current) return;
@@ -604,15 +612,28 @@ export default function FileManager({ actions }: AppComponentProps) {
 
   const handlePaste = useCallback(async () => {
     if (!clipboard || !clientRef.current) return;
+    const client = clientRef.current;
+    const normalize = (p: string) => p.replace(/\\/g, '/');
+
+    // Names already chosen by previous iterations of this paste session.
+    // We must consult this in addition to `files`, because `files` reflects
+    // a snapshot from before the loop and won't update until loadFiles runs
+    // afterwards. Without it, two sources with the same basename both pass
+    // the existence check and the second silently overwrites the first.
+    const claimed = new Set<string>();
+    const isTaken = (dst: string) => {
+      const key = normalize(dst);
+      return claimed.has(key) || files.some(f => normalize(f.path) === key);
+    };
+
     try {
-      const normalize = (p: string) => p.replace(/\\/g, '/');
-      for (const src of clipboard.paths) {
+      for (let i = 0; i < clipboard.paths.length; i++) {
+        const src = clipboard.paths[i];
         const originalName = normalize(src).split('/').pop() || '';
         let name = originalName;
         let dst = joinPath(currentPath, name);
 
-        // Auto-rename if destination already exists (including same-file copy)
-        if (files.some(f => normalize(f.path) === normalize(dst))) {
+        if (isTaken(dst)) {
           const extIndex = originalName.lastIndexOf('.');
           const hasExt = extIndex > 0;
           const base = hasExt ? originalName.substring(0, extIndex) : originalName;
@@ -620,18 +641,34 @@ export default function FileManager({ actions }: AppComponentProps) {
 
           let counter = 1;
           let newName = `${base} - copy${ext}`;
-          while (files.some(f => normalize(f.path) === normalize(joinPath(currentPath, newName)))) {
+          while (isTaken(joinPath(currentPath, newName))) {
             counter++;
             newName = `${base} - copy ${counter}${ext}`;
           }
           name = newName;
           dst = joinPath(currentPath, name);
         }
+        claimed.add(normalize(dst));
+
+        setPasteProgress({
+          mode: clipboard.mode,
+          index: i + 1,
+          total: clipboard.paths.length,
+          currentName: name,
+          innerDone: 0,
+          innerTotal: 0,
+        });
+
+        const onProgress = (p: ProgressInfo) => {
+          setPasteProgress(prev =>
+            prev ? { ...prev, innerDone: p.done, innerTotal: p.total } : prev,
+          );
+        };
 
         if (clipboard.mode === 'copy') {
-          await clientRef.current.copy(src, dst);
+          await client.copy(src, dst, onProgress);
         } else {
-          await clientRef.current.move(src, dst);
+          await client.move(src, dst, onProgress);
         }
       }
       if (clipboard.mode === 'cut') {
@@ -640,6 +677,8 @@ export default function FileManager({ actions }: AppComponentProps) {
       loadFiles(currentPath);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setPasteProgress(null);
     }
   }, [clipboard, currentPath, loadFiles, files]);
 
@@ -676,10 +715,15 @@ export default function FileManager({ actions }: AppComponentProps) {
       const isInput = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
       if (isInput) return;
 
+      // Swallow shortcuts while a paste/move is in progress so the user
+      // can't queue another paste, delete, or rename mid-operation.
+      if (pasteProgress) return;
+
       if (e.ctrlKey || e.metaKey) {
         if (e.key === 'c') { e.preventDefault(); handleCopy(); }
         if (e.key === 'v') { e.preventDefault(); handlePaste(); }
         if (e.key === 'x') { e.preventDefault(); handleCut(); }
+        if (e.key === 'a') { e.preventDefault(); setSelected(new Set(files.map(f => f.path))); }
       }
       if (e.key === 'Delete') {
         if (selected.size > 0) {
@@ -1144,6 +1188,9 @@ export default function FileManager({ actions }: AppComponentProps) {
 
       {/* ===== Dialogs ===== */}
 
+      {/* Paste progress modal — blocks all interaction while in flight */}
+      {pasteProgress && <PasteProgressDialog progress={pasteProgress} />}
+
       {/* Rename Dialog */}
       {renameTarget && (
         <Dialog title={`Rename: ${renameTarget.name}`} onClose={() => setRenameTarget(null)}>
@@ -1388,6 +1435,43 @@ export default function FileManager({ actions }: AppComponentProps) {
 }
 
 // --- Sub-components ---
+
+function PasteProgressBar({ progress }: {
+  progress: {
+    mode: 'copy' | 'cut';
+    index: number;
+    total: number;
+    currentName: string;
+    innerDone: number;
+    innerTotal: number;
+  };
+}) {
+  const { mode, index, total, currentName, innerDone, innerTotal } = progress;
+  // Overall percentage across the whole paste session: completed items
+  // contribute fully; the in-flight item contributes its inner ratio.
+  const inFlightFraction = innerTotal > 0 ? innerDone / innerTotal : 0;
+  const overall = total > 0 ? Math.min(100, Math.round(((index - 1 + inFlightFraction) / total) * 100)) : 0;
+  const verb = mode === 'cut' ? 'Moving' : 'Copying';
+  const innerLabel = innerTotal > 1 ? ` · ${innerDone}/${innerTotal} files` : '';
+  return (
+    <div className="mb-3 px-3 py-2 rounded-lg bg-emerald-500/5 border border-emerald-500/20 text-emerald-200 text-xs">
+      <div className="flex items-center gap-2">
+        <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
+        <span className="font-medium">{verb}</span>
+        <span className="truncate">{currentName}</span>
+        <span className="ml-auto text-gray-400 shrink-0">
+          {index}/{total}{innerLabel}
+        </span>
+      </div>
+      <div className="mt-1.5 h-1 w-full rounded-full bg-white/5 overflow-hidden">
+        <div
+          className="h-full bg-emerald-400/70 transition-[width] duration-150"
+          style={{ width: `${overall}%` }}
+        />
+      </div>
+    </div>
+  );
+}
 
 function ToolbarBtn({ children, onClick, disabled, title, active }: {
   children: React.ReactNode; onClick?: () => void; disabled?: boolean; title?: string; active?: boolean;

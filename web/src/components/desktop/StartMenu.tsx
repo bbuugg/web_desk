@@ -1,5 +1,5 @@
 import {
-  FolderOpen, TerminalSquare, Activity, Settings, FileText, FileImage, PlaySquare, FileArchive,
+  FolderOpen, TerminalSquare, Activity, Settings, FileText, FileImage, PlaySquare, FileArchive, LogOut,
 } from 'lucide-react';
 import type { DesktopApp, WindowManagerActions } from '@/types/desktop';
 
@@ -22,9 +22,10 @@ interface StartMenuProps {
   apps: DesktopApp[];
   actions: WindowManagerActions;
   onClose: () => void;
+  onLogout?: () => void;
 }
 
-export default function StartMenu({ apps, actions, onClose }: StartMenuProps) {
+export default function StartMenu({ apps, actions, onClose, onLogout }: StartMenuProps) {
   return (
     <div className="absolute bottom-[calc(100%+1rem)] left-0 z-[10000] pointer-events-auto" onClick={e => e.stopPropagation()}>
       <div className="start-menu rounded-2xl p-4 w-72 flex flex-col gap-3 animate-in fade-in slide-in-from-bottom-4 duration-300 ease-out fill-mode-forwards will-change-transform">
@@ -58,8 +59,18 @@ export default function StartMenu({ apps, actions, onClose }: StartMenuProps) {
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between pt-2 border-t border-white/5">
+        <div className="flex items-center gap-2 pt-2 border-t border-white/5">
           <span className="text-[10px] text-gray-600">Linux Server Manager</span>
+          {onLogout && (
+            <button
+              type="button"
+              className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-gray-400 transition-colors hover:bg-white/5 hover:text-red-300"
+              onClick={onLogout}
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              注销登录
+            </button>
+          )}
           <span className="text-[10px] text-gray-600">v1.0.0</span>
         </div>
       </div>
