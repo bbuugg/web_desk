@@ -70,44 +70,57 @@ func TestUploadFilesReturnsUploadedList(t *testing.T) {
 	}
 }
 
-func TestTrashStampRoundTrip(t *testing.T) {
+func TestTrashWrapperNamesAreUnique(t *testing.T) {
 	t.Parallel()
 
-	cases := []string{
-		"foo.txt",
-		"report.tar.gz",
-		"no-extension",
-		".bashrc",
-		".env.local",
-		"contains__trash_999_in_name.txt",
-	}
-	for _, name := range cases {
-		stamped := addTrashStamp(name)
-		if stamped == name {
-			t.Errorf("addTrashStamp(%q) was a no-op", name)
+	const n = 5000
+	seen := make(map[string]struct{}, n)
+	for i := 0; i < n; i++ {
+		name := newTrashWrapperName()
+		if _, dup := seen[name]; dup {
+			t.Fatalf("duplicate wrapper name %q at iteration %d", name, i)
 		}
-		got := stripTrashStamp(stamped)
-		if got != name {
-			t.Errorf("round trip for %q: stamped=%q, stripped=%q", name, stamped, got)
-		}
+		seen[name] = struct{}{}
 	}
 }
 
-func TestStripTrashStampLeavesUnstampedNamesAlone(t *testing.T) {
+func TestTrashMetaRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	cases := []string{
-		"foo.txt",
-		"report.tar.gz",
-		".bashrc",
-		"trailing__trash_.txt",     // empty digit run — not a real stamp
-		"prefix__trash_abc.txt",    // non-digit suffix — not a real stamp
-		"middle__trash_123_in.txt", // stamp not at end of base — not stripped
+	wrapper := t.TempDir()
+	in := trashMeta{OriginalPath: "/abs/path/foo.txt", DeletedAt: 1234567890123}
+	if err := writeTrashMeta(wrapper, in); err != nil {
+		t.Fatalf("write meta: %v", err)
 	}
-	for _, name := range cases {
-		if got := stripTrashStamp(name); got != name {
-			t.Errorf("stripTrashStamp(%q) should be a no-op, got %q", name, got)
-		}
+	out, err := readTrashMeta(wrapper)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if out != in {
+		t.Errorf("meta round-trip: got %+v, want %+v", out, in)
+	}
+}
+
+func TestTrashItemInsideSkipsMeta(t *testing.T) {
+	t.Parallel()
+
+	wrapper := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wrapper, trashMetaFile), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wrapper, "payload.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	itemPath, info, err := trashItemInside(wrapper)
+	if err != nil {
+		t.Fatalf("trashItemInside: %v", err)
+	}
+	if filepath.Base(itemPath) != "payload.txt" {
+		t.Errorf("expected payload.txt, got %q", itemPath)
+	}
+	if info.IsDir() {
+		t.Errorf("expected non-dir item")
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -336,60 +337,82 @@ func FileManagerWS(c *gin.Context) {
 
 const (
 	TrashRoot     = ".trash"
-	trashStampSep = "__trash_"
+	trashMetaFile = ".meta.json"
 )
 
-// addTrashStamp inserts a unique nanosecond stamp before the extension so
-// repeated deletions of the same source path produce distinct trash entries:
-//
-//	foo.txt          -> foo__trash_1730000000000000123.txt
-//	report.tar.gz    -> report.tar__trash_1730000000000000456.gz
-//	.bashrc          -> __trash_1730000000000000789.bashrc
-//
-// stripTrashStamp reverses this exact transform.
-func addTrashStamp(name string) string {
-	ext := filepath.Ext(name)
-	base := strings.TrimSuffix(name, ext)
-	// Hidden files like ".bashrc" — Ext returns the whole name; treat as
-	// extension so the stamp lands before it on restore-friendly form.
-	if base == "" && strings.HasPrefix(name, ".") {
-		return fmt.Sprintf("%s%d%s", trashStampSep, time.Now().UnixNano(), name)
-	}
-	return fmt.Sprintf("%s%s%d%s", base, trashStampSep, time.Now().UnixNano(), ext)
+// trashCounter disambiguates two deletes that land in the same nanosecond
+// (possible on coarse-resolution clocks like Windows). It only needs to be
+// unique within a single process run.
+var trashCounter atomic.Uint64
+
+// trashMeta is the sidecar file that records where a trashed item came from
+// so handleRestore can put it back. Stored as <wrapperDir>/.meta.json.
+type trashMeta struct {
+	OriginalPath string `json:"originalPath"`
+	DeletedAt    int64  `json:"deletedAt"` // unix ms
 }
 
-// stripTrashStamp removes the stamp added by addTrashStamp. It looks only
-// at the position right before the extension (or at the very start for
-// dotfiles) to avoid stripping a literal "__trash_123" the user happened
-// to put in their own filename.
-func stripTrashStamp(name string) string {
-	// Dotfile case: stamp sits at the start, e.g. "__trash_123.bashrc".
-	if rest, ok := strings.CutPrefix(name, trashStampSep); ok {
-		cut := 0
-		for cut < len(rest) && rest[cut] >= '0' && rest[cut] <= '9' {
-			cut++
+// newTrashWrapperName returns a name unique across the lifetime of this
+// process: nanoseconds appended with a monotonic counter.
+func newTrashWrapperName() string {
+	return fmt.Sprintf("%d_%d", time.Now().UnixNano(), trashCounter.Add(1))
+}
+
+// trashWrapperFor returns the absolute wrapper directory that contains a
+// given on-disk trash entry path (the immediate child of trashBase).
+// Returns "" if the path is not inside the trash.
+func trashWrapperFor(p string) string {
+	home, _ := os.UserHomeDir()
+	trashBase := filepath.Join(home, TrashRoot)
+	cleanedP := cleanPath(p)
+	rel, err := filepath.Rel(trashBase, cleanedP)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	first := strings.Split(rel, string(filepath.Separator))[0]
+	if first == "" {
+		return ""
+	}
+	return filepath.Join(trashBase, first)
+}
+
+func writeTrashMeta(wrapperDir string, meta trashMeta) error {
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(wrapperDir, trashMetaFile), data, 0o644)
+}
+
+func readTrashMeta(wrapperDir string) (trashMeta, error) {
+	var m trashMeta
+	data, err := os.ReadFile(filepath.Join(wrapperDir, trashMetaFile))
+	if err != nil {
+		return m, err
+	}
+	err = json.Unmarshal(data, &m)
+	return m, err
+}
+
+// trashItemInside returns the path of the single non-meta entry inside a
+// wrapper dir. Wrappers always contain exactly one such entry plus the
+// .meta.json sidecar.
+func trashItemInside(wrapperDir string) (string, os.FileInfo, error) {
+	entries, err := os.ReadDir(wrapperDir)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, e := range entries {
+		if e.Name() == trashMetaFile {
+			continue
 		}
-		if cut > 0 && cut < len(rest) && rest[cut] == '.' {
-			return rest[cut:]
+		info, err := e.Info()
+		if err != nil {
+			return "", nil, err
 		}
-		return name
+		return filepath.Join(wrapperDir, e.Name()), info, nil
 	}
-	ext := filepath.Ext(name)
-	base := strings.TrimSuffix(name, ext)
-	i := strings.LastIndex(base, trashStampSep)
-	if i < 0 {
-		return name
-	}
-	digits := base[i+len(trashStampSep):]
-	if digits == "" {
-		return name
-	}
-	for _, r := range digits {
-		if r < '0' || r > '9' {
-			return name
-		}
-	}
-	return base[:i] + ext
+	return "", nil, fmt.Errorf("trash wrapper %s has no item", wrapperDir)
 }
 
 // uniqueRestorePath returns p if nothing exists there, otherwise appends
@@ -413,24 +436,6 @@ func uniqueRestorePath(p string) string {
 			return candidate
 		}
 	}
-}
-
-func getTrashPath(p string) string {
-	home, _ := os.UserHomeDir()
-	trashBase := filepath.Join(home, TrashRoot)
-
-	// Preserve original path structure inside trash
-	// We need to handle windows drive letters and root paths
-	cleanP := cleanPath(p)
-
-	// Remove windows volume name for trash path
-	vol := filepath.VolumeName(cleanP)
-	pWithoutVol := cleanP[len(vol):]
-
-	// Handle drive letters like C: -> C
-	pWithoutVol = strings.Replace(pWithoutVol, ":", "", 1)
-
-	return filepath.Join(trashBase, pWithoutVol)
 }
 
 func handleRequest(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
@@ -485,20 +490,34 @@ func handleDelete(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		return
 	}
 
-	mirroredDst := getTrashPath(src)
-
-	// Ensure trash parent directory exists
-	if err := os.MkdirAll(filepath.Dir(mirroredDst), 0755); err != nil {
-		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot create trash dir: %s", err.Error()))
+	// Each deletion gets its own wrapper directory under trashBase. The
+	// item lives inside under its original basename, with a sidecar
+	// .meta.json that records the original full path so handleRestore
+	// can put it back. This avoids the path-mirroring collisions where
+	// previously trashing /foo/bar (file) blocked later trashing of
+	// /foo/bar/baz because /foo/bar already existed as a non-directory.
+	wrapperDir := filepath.Join(trashBase, newTrashWrapperName())
+	if err := os.MkdirAll(wrapperDir, 0o755); err != nil {
+		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot create trash wrapper: %s", err.Error()))
 		return
 	}
 
-	// Always stamp the leaf so repeated deletions of the same source path
-	// produce distinct trash entries. handleRestore strips the stamp.
-	dst := filepath.Join(filepath.Dir(mirroredDst), addTrashStamp(filepath.Base(mirroredDst)))
-
+	dst := filepath.Join(wrapperDir, filepath.Base(src))
 	if err := moveFileOrDir(src, dst, nil); err != nil {
+		os.RemoveAll(wrapperDir)
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot move to trash: %s", err.Error()))
+		return
+	}
+
+	if err := writeTrashMeta(wrapperDir, trashMeta{
+		OriginalPath: src,
+		DeletedAt:    time.Now().UnixMilli(),
+	}); err != nil {
+		// Roll back the move so we don't leave a wrapper without a meta
+		// (which would become unrecoverable on restore).
+		_ = moveFileOrDir(dst, src, nil)
+		os.RemoveAll(wrapperDir)
+		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot write trash meta: %s", err.Error()))
 		return
 	}
 
@@ -507,7 +526,7 @@ func handleDelete(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 
 func handleRestore(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 	var data struct {
-		Path string `json:"path"` // Path in trash
+		Path string `json:"path"` // Path of the trashed item (anywhere inside its wrapper)
 	}
 	if err := json.Unmarshal(req.Data, &data); err != nil {
 		sendError(conn, mu, req.ID, "Invalid restore request data")
@@ -515,42 +534,26 @@ func handleRestore(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 	}
 
 	trashPath := cleanPath(data.Path)
-	home, _ := os.UserHomeDir()
-	trashBase := filepath.Join(home, TrashRoot)
-
-	if !strings.HasPrefix(trashPath, trashBase) {
+	wrapperDir := trashWrapperFor(trashPath)
+	if wrapperDir == "" {
 		sendError(conn, mu, req.ID, "File is not in trash")
 		return
 	}
 
-	// Calculate original path
-	rel, err := filepath.Rel(trashBase, trashPath)
+	meta, err := readTrashMeta(wrapperDir)
 	if err != nil {
-		sendError(conn, mu, req.ID, "Cannot calculate original path")
+		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot read trash meta: %s", err.Error()))
 		return
 	}
 
-	// Strip the trash stamp from the leaf only — handleDelete only stamps
-	// the basename, so intermediate directory components are unchanged.
-	rel = filepath.Join(filepath.Dir(rel), stripTrashStamp(filepath.Base(rel)))
-
-	// Note: Restoration logic is simplified here.
-	// In a real system we'd need a mapping file to handle drive letters and complex paths correctly.
-	// For now we'll assume the relative path from trash base can be reconstructed.
-
-	// Restoration logic: If it looks like a drive letter (Windows), restore it.
-	var originalPath string
-	if runtime.GOOS == "windows" {
-		if len(rel) >= 1 && rel[1] == filepath.Separator {
-			originalPath = rel[0:1] + ":" + rel[1:]
-		} else {
-			originalPath = filepath.Join(filepath.VolumeName(home), rel)
-		}
-	} else {
-		originalPath = "/" + rel
+	itemPath, _, err := trashItemInside(wrapperDir)
+	if err != nil {
+		sendError(conn, mu, req.ID, err.Error())
+		return
 	}
 
-	if err := os.MkdirAll(filepath.Dir(originalPath), 0755); err != nil {
+	originalPath := cleanPath(meta.OriginalPath)
+	if err := os.MkdirAll(filepath.Dir(originalPath), 0o755); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot create original parent dir: %s", err.Error()))
 		return
 	}
@@ -559,10 +562,13 @@ func handleRestore(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 	// restore never silently overwrites or fails.
 	originalPath = uniqueRestorePath(originalPath)
 
-	if err := moveFileOrDir(trashPath, originalPath, nil); err != nil {
+	if err := moveFileOrDir(itemPath, originalPath, nil); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot restore file: %s", err.Error()))
 		return
 	}
+
+	// Clean up the wrapper (now contains only the meta sidecar).
+	os.RemoveAll(wrapperDir)
 
 	sendSuccess(conn, mu, req.ID, gin.H{"path": originalPath})
 }
@@ -594,6 +600,18 @@ func handlePermanentDelete(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) 
 	trashBase := filepath.Join(home, TrashRoot)
 	if filePath == trashBase {
 		sendError(conn, mu, req.ID, "Cannot delete the Recycle Bin directory")
+		return
+	}
+
+	// If the path lives inside a trash wrapper, remove the entire wrapper
+	// (item + meta sidecar) — not just the item — so we don't leave orphan
+	// metadata behind.
+	if wrapper := trashWrapperFor(filePath); wrapper != "" {
+		if err := os.RemoveAll(wrapper); err != nil {
+			sendError(conn, mu, req.ID, fmt.Sprintf("Cannot delete permanently: %s", err.Error()))
+			return
+		}
+		sendSuccess(conn, mu, req.ID, gin.H{"path": filePath})
 		return
 	}
 
@@ -777,10 +795,62 @@ func handleList(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		return
 	}
 
-	// Inside the trash, the leaf entry name carries a __trash_<UnixNano>
-	// stamp added by handleDelete. Show the stripped name to the user but
-	// keep the real on-disk path so restore/permanent-delete still resolve.
-	insideTrash := dirPath == trashBase || strings.HasPrefix(dirPath, trashBase+string(filepath.Separator))
+	// Listing the trash root: each immediate child is a wrapper directory
+	// containing a single trashed item plus a .meta.json sidecar. Translate
+	// each wrapper into a FileInfo that surfaces the original item directly,
+	// so the user sees the deleted file/dir as if it were sitting in the
+	// trash. Pre-existing entries that aren't valid wrappers (legacy
+	// path-mirror trash, or wrappers with a missing/corrupt sidecar) are
+	// shown as raw entries so they can still be cleaned up manually.
+	if dirPath == trashBase {
+		files := []FileInfo{}
+		for _, entry := range entries {
+			name := entry.Name()
+			if !data.ShowHidden && strings.HasPrefix(name, ".") {
+				continue
+			}
+			wrapperDir := filepath.Join(dirPath, name)
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			if entry.IsDir() {
+				if _, metaErr := os.Stat(filepath.Join(wrapperDir, trashMetaFile)); metaErr == nil {
+					if itemPath, itemInfo, err := trashItemInside(wrapperDir); err == nil {
+						files = append(files, FileInfo{
+							Name:    itemInfo.Name(),
+							Path:    itemPath,
+							IsDir:   itemInfo.IsDir(),
+							Size:    itemInfo.Size(),
+							Mode:    itemInfo.Mode().String(),
+							ModTime: itemInfo.ModTime().UnixMilli(),
+						})
+						continue
+					}
+				}
+			}
+			// Legacy / orphan entry — show as-is.
+			files = append(files, FileInfo{
+				Name:    name,
+				Path:    wrapperDir,
+				IsDir:   entry.IsDir(),
+				Size:    info.Size(),
+				Mode:    info.Mode().String(),
+				ModTime: info.ModTime().UnixMilli(),
+			})
+		}
+		sort.Slice(files, func(i, j int) bool {
+			if files[i].IsDir != files[j].IsDir {
+				return files[i].IsDir
+			}
+			return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
+		})
+		sendSuccess(conn, mu, req.ID, ListResponse{
+			Path:  dirPath,
+			Files: files,
+		})
+		return
+	}
 
 	files := []FileInfo{}
 	for _, entry := range entries {
@@ -796,13 +866,8 @@ func handleList(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 			continue
 		}
 
-		displayName := name
-		if insideTrash {
-			displayName = stripTrashStamp(name)
-		}
-
 		files = append(files, FileInfo{
-			Name:    displayName,
+			Name:    name,
 			Path:    filepath.Join(dirPath, name),
 			IsDir:   entry.IsDir(),
 			Size:    info.Size(),
