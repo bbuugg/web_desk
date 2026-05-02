@@ -204,8 +204,8 @@ export class FileManagerClient {
     return this.send('mkdir', { path });
   }
 
-  delete(path: string): Promise<{ path: string }> {
-    return this.send('delete', { path });
+  delete(path: string, onProgress?: (p: ProgressInfo) => void): Promise<{ path: string }> {
+    return this.send('delete', { path }, onProgress);
   }
 
   rename(oldPath: string, newPath: string): Promise<{ oldPath: string; newPath: string }> {
@@ -248,11 +248,11 @@ export class FileManagerClient {
     return this.send('restore', { path });
   }
 
-  emptyTrash(): Promise<{ status: string }> {
-    return this.send('empty_trash', {});
+  emptyTrash(onProgress?: (p: ProgressInfo) => void): Promise<{ status: string }> {
+    return this.send('empty_trash', {}, onProgress);
   }
 
-  permanentDelete(path: string): Promise<{ path: string }> {
-    return this.send('permanent_delete', { path });
+  permanentDelete(path: string, onProgress?: (p: ProgressInfo) => void): Promise<{ path: string }> {
+    return this.send('permanent_delete', { path }, onProgress);
   }
 }

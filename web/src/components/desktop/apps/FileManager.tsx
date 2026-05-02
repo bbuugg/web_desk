@@ -161,7 +161,7 @@ export default function FileManager({ actions }: AppComponentProps) {
   const [compressName, setCompressName] = useState('');
   const [clipboard, setClipboard] = useState<{ paths: string[], mode: 'copy' | 'cut' } | null>(null);
   const [pasteProgress, setPasteProgress] = useState<{
-    mode: 'copy' | 'cut';
+    mode: 'copy' | 'cut' | 'delete';
     index: number;        // 1-based index of clipboard item being processed
     total: number;        // total clipboard items
     currentName: string;  // basename of current clipboard item
@@ -475,18 +475,35 @@ export default function FileManager({ actions }: AppComponentProps) {
     if (!deleteConfirmBulk || !clientRef.current) return;
     const targets = [...deleteConfirmBulk];
     setDeleteConfirmBulk(null);
+    const client = clientRef.current;
     try {
-      for (const f of targets) {
+      for (let i = 0; i < targets.length; i++) {
+        const f = targets[i];
+        setPasteProgress({
+          mode: 'delete',
+          index: i + 1,
+          total: targets.length,
+          currentName: f.name,
+          innerDone: 0,
+          innerTotal: 0,
+        });
+        const onProgress = (p: ProgressInfo) => {
+          setPasteProgress(prev =>
+            prev ? { ...prev, innerDone: p.done, innerTotal: p.total } : prev,
+          );
+        };
         if (appMode === 'trash') {
-          await clientRef.current.permanentDelete(f.path);
+          await client.permanentDelete(f.path, onProgress);
         } else {
-          await clientRef.current.delete(f.path);
+          await client.delete(f.path, onProgress);
         }
       }
       setSelected(new Set());
       loadFiles(currentPath);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setPasteProgress(null);
     }
   }, [deleteConfirmBulk, currentPath, loadFiles, appMode]);
 
@@ -507,11 +524,25 @@ export default function FileManager({ actions }: AppComponentProps) {
   const handleEmptyTrash = useCallback(async () => {
     if (!clientRef.current) return;
     setEmptyTrashConfirm(false);
+    setPasteProgress({
+      mode: 'delete',
+      index: 1,
+      total: 1,
+      currentName: '回收站',
+      innerDone: 0,
+      innerTotal: 0,
+    });
     try {
-      await clientRef.current.emptyTrash();
+      await clientRef.current.emptyTrash(p =>
+        setPasteProgress(prev =>
+          prev ? { ...prev, innerDone: p.done, innerTotal: p.total } : prev,
+        ),
+      );
       loadFiles(currentPath);
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setPasteProgress(null);
     }
   }, [currentPath, loadFiles]);
 
@@ -1432,7 +1463,7 @@ export default function FileManager({ actions }: AppComponentProps) {
 
 function PasteProgressDialog({ progress }: {
   progress: {
-    mode: 'copy' | 'cut';
+    mode: 'copy' | 'cut' | 'delete';
     index: number;
     total: number;
     currentName: string;
@@ -1445,7 +1476,9 @@ function PasteProgressDialog({ progress }: {
   // contribute fully; the in-flight item contributes its inner ratio.
   const inFlightFraction = innerTotal > 0 ? innerDone / innerTotal : 0;
   const overall = total > 0 ? Math.min(100, Math.round(((index - 1 + inFlightFraction) / total) * 100)) : 0;
-  const verb = mode === 'cut' ? 'Moving' : 'Copying';
+  const verb = mode === 'cut' ? 'Moving' : mode === 'delete' ? 'Deleting' : 'Copying';
+  const accent = mode === 'delete' ? 'bg-red-400/80' : 'bg-emerald-400/80';
+  const accentIcon = mode === 'delete' ? 'text-red-400' : 'text-emerald-400';
   const innerLabel = innerTotal > 1 ? `${innerDone} / ${innerTotal} files` : '';
   return (
     <div
@@ -1462,14 +1495,14 @@ function PasteProgressDialog({ progress }: {
         onMouseDown={e => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 mb-3">
-          <Loader2 className="w-4 h-4 shrink-0 animate-spin text-emerald-400" />
+          <Loader2 className={`w-4 h-4 shrink-0 animate-spin ${accentIcon}`} />
           <h3 className="text-sm font-semibold text-gray-200">{verb}…</h3>
           <span className="ml-auto text-xs text-gray-500">{index} / {total}</span>
         </div>
         <div className="text-xs text-gray-400 mb-2 truncate" title={currentName}>{currentName}</div>
         <div className="h-1.5 w-full rounded-full bg-white/5 overflow-hidden">
           <div
-            className="h-full bg-emerald-400/80 transition-[width] duration-150"
+            className={`h-full ${accent} transition-[width] duration-150`}
             style={{ width: `${overall}%` }}
           />
         </div>

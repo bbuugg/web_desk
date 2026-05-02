@@ -502,8 +502,11 @@ func handleDelete(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		return
 	}
 
+	total, _ := countFiles(src)
+	tracker := newProgressTracker(conn, mu, req.ID, total)
+
 	dst := filepath.Join(wrapperDir, filepath.Base(src))
-	if err := moveFileOrDir(src, dst, nil); err != nil {
+	if err := moveFileOrDir(src, dst, tracker); err != nil {
 		os.RemoveAll(wrapperDir)
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot move to trash: %s", err.Error()))
 		return
@@ -520,6 +523,7 @@ func handleDelete(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot write trash meta: %s", err.Error()))
 		return
 	}
+	tracker.flush()
 
 	sendSuccess(conn, mu, req.ID, gin.H{"path": src, "trashPath": dst})
 }
@@ -577,12 +581,16 @@ func handleEmptyTrash(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 	home, _ := os.UserHomeDir()
 	trashBase := filepath.Join(home, TrashRoot)
 
-	if err := os.RemoveAll(trashBase); err != nil {
+	total, _ := countFiles(trashBase)
+	tracker := newProgressTracker(conn, mu, req.ID, total)
+
+	if err := removeAllWithProgress(trashBase, tracker); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot empty trash: %s", err.Error()))
 		return
 	}
 
-	os.MkdirAll(trashBase, 0755)
+	os.MkdirAll(trashBase, 0o755)
+	tracker.flush()
 	sendSuccess(conn, mu, req.ID, gin.H{"status": "ok"})
 }
 
@@ -605,20 +613,21 @@ func handlePermanentDelete(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) 
 
 	// If the path lives inside a trash wrapper, remove the entire wrapper
 	// (item + meta sidecar) — not just the item — so we don't leave orphan
-	// metadata behind.
+	// metadata behind. Progress is reported on the item's regular files;
+	// the meta sidecar removal doesn't tick (it's not part of the count).
+	target := filePath
 	if wrapper := trashWrapperFor(filePath); wrapper != "" {
-		if err := os.RemoveAll(wrapper); err != nil {
-			sendError(conn, mu, req.ID, fmt.Sprintf("Cannot delete permanently: %s", err.Error()))
-			return
-		}
-		sendSuccess(conn, mu, req.ID, gin.H{"path": filePath})
-		return
+		target = wrapper
 	}
 
-	if err := os.RemoveAll(filePath); err != nil {
+	total, _ := countFiles(target)
+	tracker := newProgressTracker(conn, mu, req.ID, total)
+
+	if err := removeAllWithProgress(target, tracker); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot delete permanently: %s", err.Error()))
 		return
 	}
+	tracker.flush()
 
 	sendSuccess(conn, mu, req.ID, gin.H{"path": filePath})
 }
@@ -1180,6 +1189,38 @@ func countFiles(path string) (int, error) {
 		return nil
 	})
 	return n, err
+}
+
+// removeAllWithProgress is os.RemoveAll plus per-regular-file progress
+// ticks, so the caller can report deletion progress in the same units as
+// countFiles. Symlinks and directories are unlinked but don't tick.
+func removeAllWithProgress(p string, tracker *progressTracker) error {
+	info, err := os.Lstat(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.IsDir() {
+		entries, err := os.ReadDir(p)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := removeAllWithProgress(filepath.Join(p, e.Name()), tracker); err != nil {
+				return err
+			}
+		}
+		return os.Remove(p)
+	}
+	if err := os.Remove(p); err != nil {
+		return err
+	}
+	if info.Mode().IsRegular() {
+		tracker.tick(p)
+	}
+	return nil
 }
 
 func copyFileOrDir(src, dst string, tracker *progressTracker) error {
