@@ -12,18 +12,19 @@ import {
 } from '@/components/ui/context-menu';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { clearBootAuth, hasValidBootAuth, saveBootAuth } from '@/lib/auth';
 import { Lock, Loader2, RefreshCw, Upload } from 'lucide-react';
 
 type BootState = 'checking' | 'password' | 'error' | 'ready';
 
 interface SecurityStatus {
   passwordEnabled: boolean;
+  authenticated: boolean;
   loginTtlDays: number;
 }
 
 const defaultSecurityStatus: SecurityStatus = {
   passwordEnabled: false,
+  authenticated: true,
   loginTtlDays: 7,
 };
 
@@ -56,6 +57,17 @@ export default function Desktop() {
     }, 1000);
   }, []);
 
+  const loadWallpaper = useCallback(async () => {
+    try {
+      const wallpaperResponse = await fetch('/api/config/wallpaper');
+      if (!wallpaperResponse.ok) return;
+      const wallpaperData = await wallpaperResponse.json();
+      if (wallpaperData.path) setWallpaper(wallpaperData.path);
+    } catch (err) {
+      console.error('Failed to fetch wallpaper:', err);
+    }
+  }, []);
+
   const loadBootstrap = useCallback(async () => {
     setBootError('');
     setPasswordError('');
@@ -65,27 +77,20 @@ export default function Desktop() {
     setBootState('checking');
 
     try {
-      const [wallpaperResult, securityResult] = await Promise.allSettled([
-        fetch('/api/config/wallpaper'),
-        fetch('/api/config/security'),
-      ]);
-
-      if (wallpaperResult.status === 'fulfilled' && wallpaperResult.value.ok) {
-        const wallpaperData = await wallpaperResult.value.json();
-        if (wallpaperData.path) setWallpaper(wallpaperData.path);
-      }
-
-      if (securityResult.status !== 'fulfilled' || !securityResult.value.ok) {
+      const securityResponse = await fetch('/api/config/security');
+      if (!securityResponse.ok) {
         throw new Error('Failed to load security config');
       }
 
-      const securityData = (await securityResult.value.json()) as SecurityStatus;
+      const securityData = (await securityResponse.json()) as SecurityStatus;
       setSecurityStatus({
         passwordEnabled: Boolean(securityData.passwordEnabled),
+        authenticated: Boolean(securityData.authenticated),
         loginTtlDays: Number(securityData.loginTtlDays) > 0 ? Number(securityData.loginTtlDays) : 7,
       });
 
-      if (!securityData.passwordEnabled || hasValidBootAuth()) {
+      if (!securityData.passwordEnabled || securityData.authenticated) {
+        await loadWallpaper();
         finishBoot();
         return;
       }
@@ -96,7 +101,7 @@ export default function Desktop() {
       setBootError('无法加载启动配置，请重试');
       setBootState('error');
     }
-  }, [finishBoot]);
+  }, [finishBoot, loadWallpaper]);
 
   useEffect(() => {
     void loadBootstrap();
@@ -167,8 +172,9 @@ export default function Desktop() {
         throw new Error('invalid password');
       }
 
-      saveBootAuth();
       setPassword('');
+      setSecurityStatus(prev => ({ ...prev, passwordEnabled: true, authenticated: true }));
+      await loadWallpaper();
       finishBoot();
     } catch {
       setPasswordError('密码错误，请重试');
@@ -180,10 +186,15 @@ export default function Desktop() {
   const handleLogout = useCallback(() => {
     if (!securityStatus.passwordEnabled) return;
 
-    clearBootAuth();
+    void fetch('/api/config/security/logout', { method: 'POST' }).catch(() => {});
+    if (revealTimerRef.current !== null) {
+      window.clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
     setPassword('');
     setPasswordError('');
     setBootError('');
+    setSecurityStatus(prev => ({ ...prev, authenticated: false }));
     setBootState('password');
     setIsLoaded(false);
     setShowLoader(true);

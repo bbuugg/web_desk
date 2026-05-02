@@ -37,6 +37,7 @@ interface PortMapping {
 
 interface SecurityStatus {
   passwordEnabled: boolean;
+  authenticated: boolean;
   loginTtlDays: number;
 }
 
@@ -89,6 +90,7 @@ export default function Settings(_props: AppComponentProps) {
       const data = (await res.json()) as SecurityStatus;
       setSecurityStatus({
         passwordEnabled: Boolean(data.passwordEnabled),
+        authenticated: Boolean(data.authenticated),
         loginTtlDays: Number(data.loginTtlDays) > 0 ? Number(data.loginTtlDays) : 7,
       });
     } catch (e) {
@@ -213,6 +215,7 @@ export default function Settings(_props: AppComponentProps) {
       const data = (await res.json()) as SecurityStatus;
       setSecurityStatus({
         passwordEnabled: Boolean(data.passwordEnabled),
+        authenticated: Boolean(data.authenticated),
         loginTtlDays: Number(data.loginTtlDays) > 0 ? Number(data.loginTtlDays) : 7,
       });
       setSecurityPassword('');
@@ -241,6 +244,7 @@ export default function Settings(_props: AppComponentProps) {
       const data = (await res.json()) as SecurityStatus;
       setSecurityStatus({
         passwordEnabled: Boolean(data.passwordEnabled),
+        authenticated: Boolean(data.authenticated),
         loginTtlDays: Number(data.loginTtlDays) > 0 ? Number(data.loginTtlDays) : 7,
       });
       setSecurityPassword('');
@@ -474,7 +478,9 @@ export default function Settings(_props: AppComponentProps) {
                     <div>
                       <div className="text-sm font-medium text-gray-200">当前状态</div>
                       <div className="text-xs text-gray-500">
-                        {securityStatus?.passwordEnabled ? `已启用，缓存有效期 ${securityStatus.loginTtlDays} 天` : '未启用，直接进入系统'}
+                        {securityStatus?.passwordEnabled
+                          ? `已启用，当前会话${securityStatus.authenticated ? '已验证' : '未验证'}，缓存有效期 ${securityStatus.loginTtlDays} 天`
+                          : '未启用，直接进入系统'}
                       </div>
                     </div>
                     <KeyRound className="h-5 w-5 text-emerald-400" />

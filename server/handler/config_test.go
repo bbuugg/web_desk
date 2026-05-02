@@ -55,6 +55,7 @@ func TestSecurityConfigDisabledByDefault(t *testing.T) {
 
 	var payload struct {
 		PasswordEnabled bool `json:"passwordEnabled"`
+		Authenticated   bool `json:"authenticated"`
 		LoginTtlDays    int  `json:"loginTtlDays"`
 	}
 	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
@@ -62,6 +63,9 @@ func TestSecurityConfigDisabledByDefault(t *testing.T) {
 	}
 	if payload.PasswordEnabled {
 		t.Fatalf("expected password to be disabled by default")
+	}
+	if !payload.Authenticated {
+		t.Fatalf("expected unauthenticated requests to count as authenticated when security is disabled")
 	}
 	if payload.LoginTtlDays != 7 {
 		t.Fatalf("expected 7 day ttl, got %d", payload.LoginTtlDays)
@@ -80,12 +84,16 @@ func TestSecurityPasswordCanBeSetAndVerified(t *testing.T) {
 	statusRecorder := runJSONHandler(t, http.MethodGet, nil, GetSecurityConfig)
 	var status struct {
 		PasswordEnabled bool `json:"passwordEnabled"`
+		Authenticated   bool `json:"authenticated"`
 	}
 	if err := json.Unmarshal(statusRecorder.Body.Bytes(), &status); err != nil {
 		t.Fatalf("decode status: %v", err)
 	}
 	if !status.PasswordEnabled {
 		t.Fatalf("expected password to be enabled after setting one")
+	}
+	if status.Authenticated {
+		t.Fatalf("expected status endpoint to reflect unauthenticated request before login")
 	}
 
 	verifyRecorder := runJSONHandler(t, http.MethodPost, gin.H{"password": "swordfish"}, VerifySecurityPassword)
@@ -130,11 +138,83 @@ func TestSecurityPasswordCanBeCleared(t *testing.T) {
 	statusRecorder := runJSONHandler(t, http.MethodGet, nil, GetSecurityConfig)
 	var status struct {
 		PasswordEnabled bool `json:"passwordEnabled"`
+		Authenticated   bool `json:"authenticated"`
 	}
 	if err := json.Unmarshal(statusRecorder.Body.Bytes(), &status); err != nil {
 		t.Fatalf("decode status: %v", err)
 	}
 	if status.PasswordEnabled {
 		t.Fatalf("expected password to be disabled after clearing")
+	}
+	if !status.Authenticated {
+		t.Fatalf("expected cleared security to behave as authenticated")
+	}
+}
+
+func TestSecurityAuthCookieAllowsProtectedRoutes(t *testing.T) {
+	withTempConfig(t)
+	gin.SetMode(gin.TestMode)
+
+	runJSONHandler(t, http.MethodPut, gin.H{"password": "swordfish"}, UpdateSecurityPassword)
+
+	router := gin.New()
+	router.Use(RequireSecurityAuth())
+	router.GET("/api/protected", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	unauthorizedReq := httptest.NewRequest(http.MethodGet, "/api/protected", nil)
+	unauthorizedRec := httptest.NewRecorder()
+	router.ServeHTTP(unauthorizedRec, unauthorizedReq)
+	if unauthorizedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d without cookie, got %d", http.StatusUnauthorized, unauthorizedRec.Code)
+	}
+
+	loginRecorder := runJSONHandler(t, http.MethodPost, gin.H{"password": "swordfish"}, VerifySecurityPassword)
+	cookies := loginRecorder.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatalf("expected auth cookie to be issued on login")
+	}
+
+	authorizedReq := httptest.NewRequest(http.MethodGet, "/api/protected", nil)
+	authorizedReq.AddCookie(cookies[0])
+	authorizedRec := httptest.NewRecorder()
+	router.ServeHTTP(authorizedRec, authorizedReq)
+	if authorizedRec.Code != http.StatusOK {
+		t.Fatalf("expected status %d with valid cookie, got %d", http.StatusOK, authorizedRec.Code)
+	}
+}
+
+func TestSecurityLogoutClearsAuthCookie(t *testing.T) {
+	withTempConfig(t)
+	gin.SetMode(gin.TestMode)
+
+	runJSONHandler(t, http.MethodPut, gin.H{"password": "swordfish"}, UpdateSecurityPassword)
+	loginRecorder := runJSONHandler(t, http.MethodPost, gin.H{"password": "swordfish"}, VerifySecurityPassword)
+	cookies := loginRecorder.Result().Cookies()
+	if len(cookies) == 0 {
+		t.Fatalf("expected auth cookie to be issued on login")
+	}
+
+	logoutReq := httptest.NewRequest(http.MethodPost, "/api/config/security/logout", nil)
+	logoutReq.AddCookie(cookies[0])
+	logoutRec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(logoutRec)
+	ctx.Request = logoutReq
+
+	LogoutSecurityAuth(ctx)
+
+	if logoutRec.Code != http.StatusOK {
+		t.Fatalf("expected logout to succeed, got %d", logoutRec.Code)
+	}
+	cleared := false
+	for _, cookie := range logoutRec.Result().Cookies() {
+		if cookie.Name == authCookieName && cookie.Value == "" {
+			cleared = true
+			break
+		}
+	}
+	if !cleared {
+		t.Fatalf("expected logout to clear auth cookie")
 	}
 }

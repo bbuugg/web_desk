@@ -335,8 +335,85 @@ func FileManagerWS(c *gin.Context) {
 }
 
 const (
-	TrashRoot = ".trash"
+	TrashRoot     = ".trash"
+	trashStampSep = "__trash_"
 )
+
+// addTrashStamp inserts a unique nanosecond stamp before the extension so
+// repeated deletions of the same source path produce distinct trash entries:
+//
+//	foo.txt          -> foo__trash_1730000000000000123.txt
+//	report.tar.gz    -> report.tar__trash_1730000000000000456.gz
+//	.bashrc          -> __trash_1730000000000000789.bashrc
+//
+// stripTrashStamp reverses this exact transform.
+func addTrashStamp(name string) string {
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	// Hidden files like ".bashrc" — Ext returns the whole name; treat as
+	// extension so the stamp lands before it on restore-friendly form.
+	if base == "" && strings.HasPrefix(name, ".") {
+		return fmt.Sprintf("%s%d%s", trashStampSep, time.Now().UnixNano(), name)
+	}
+	return fmt.Sprintf("%s%s%d%s", base, trashStampSep, time.Now().UnixNano(), ext)
+}
+
+// stripTrashStamp removes the stamp added by addTrashStamp. It looks only
+// at the position right before the extension (or at the very start for
+// dotfiles) to avoid stripping a literal "__trash_123" the user happened
+// to put in their own filename.
+func stripTrashStamp(name string) string {
+	// Dotfile case: stamp sits at the start, e.g. "__trash_123.bashrc".
+	if rest, ok := strings.CutPrefix(name, trashStampSep); ok {
+		cut := 0
+		for cut < len(rest) && rest[cut] >= '0' && rest[cut] <= '9' {
+			cut++
+		}
+		if cut > 0 && cut < len(rest) && rest[cut] == '.' {
+			return rest[cut:]
+		}
+		return name
+	}
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	i := strings.LastIndex(base, trashStampSep)
+	if i < 0 {
+		return name
+	}
+	digits := base[i+len(trashStampSep):]
+	if digits == "" {
+		return name
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return name
+		}
+	}
+	return base[:i] + ext
+}
+
+// uniqueRestorePath returns p if nothing exists there, otherwise appends
+// " (1)", " (2)", … before the extension until a free name is found.
+func uniqueRestorePath(p string) string {
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		return p
+	}
+	dir := filepath.Dir(p)
+	name := filepath.Base(p)
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	if base == "" && strings.HasPrefix(name, ".") {
+		// Dotfile — no real extension to preserve.
+		base = name
+		ext = ""
+	}
+	for i := 1; ; i++ {
+		candidate := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", base, i, ext))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
+}
 
 func getTrashPath(p string) string {
 	home, _ := os.UserHomeDir()
@@ -408,20 +485,17 @@ func handleDelete(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		return
 	}
 
-	dst := getTrashPath(src)
+	mirroredDst := getTrashPath(src)
 
 	// Ensure trash parent directory exists
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(mirroredDst), 0755); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot create trash dir: %s", err.Error()))
 		return
 	}
 
-	// If destination exists, add timestamp to avoid conflict
-	if _, err := os.Stat(dst); err == nil {
-		ext := filepath.Ext(dst)
-		base := strings.TrimSuffix(dst, ext)
-		dst = fmt.Sprintf("%s_%d%s", base, time.Now().Unix(), ext)
-	}
+	// Always stamp the leaf so repeated deletions of the same source path
+	// produce distinct trash entries. handleRestore strips the stamp.
+	dst := filepath.Join(filepath.Dir(mirroredDst), addTrashStamp(filepath.Base(mirroredDst)))
 
 	if err := moveFileOrDir(src, dst, nil); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot move to trash: %s", err.Error()))
@@ -456,6 +530,10 @@ func handleRestore(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		return
 	}
 
+	// Strip the trash stamp from the leaf only — handleDelete only stamps
+	// the basename, so intermediate directory components are unchanged.
+	rel = filepath.Join(filepath.Dir(rel), stripTrashStamp(filepath.Base(rel)))
+
 	// Note: Restoration logic is simplified here.
 	// In a real system we'd need a mapping file to handle drive letters and complex paths correctly.
 	// For now we'll assume the relative path from trash base can be reconstructed.
@@ -476,6 +554,10 @@ func handleRestore(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot create original parent dir: %s", err.Error()))
 		return
 	}
+
+	// If something already lives at the original path, suffix " (N)" so the
+	// restore never silently overwrites or fails.
+	originalPath = uniqueRestorePath(originalPath)
 
 	if err := moveFileOrDir(trashPath, originalPath, nil); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot restore file: %s", err.Error()))
@@ -695,6 +777,11 @@ func handleList(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		return
 	}
 
+	// Inside the trash, the leaf entry name carries a __trash_<UnixNano>
+	// stamp added by handleDelete. Show the stripped name to the user but
+	// keep the real on-disk path so restore/permanent-delete still resolve.
+	insideTrash := dirPath == trashBase || strings.HasPrefix(dirPath, trashBase+string(filepath.Separator))
+
 	files := []FileInfo{}
 	for _, entry := range entries {
 		name := entry.Name()
@@ -709,8 +796,13 @@ func handleList(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 			continue
 		}
 
+		displayName := name
+		if insideTrash {
+			displayName = stripTrashStamp(name)
+		}
+
 		files = append(files, FileInfo{
-			Name:    name,
+			Name:    displayName,
 			Path:    filepath.Join(dirPath, name),
 			IsDir:   entry.IsDir(),
 			Size:    info.Size(),
