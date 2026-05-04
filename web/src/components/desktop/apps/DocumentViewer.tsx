@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Download, ExternalLink, FileSpreadsheet, FileText, FileWarning, Loader2, FolderOpen } from 'lucide-react';
-import * as XLSX from 'xlsx';
-import mammoth from 'mammoth';
+import type { AppComponentProps } from '@/types/desktop';
+import { Download, ExternalLink, FileText, FileWarning, FolderOpen, Loader2 } from 'lucide-react';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import pdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
-import type { AppComponentProps } from '@/types/desktop';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import FolderPicker from '../FolderPicker';
+import { getExtensionsForApp } from '@/lib/fileAssociations';
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -13,12 +13,11 @@ type DocumentState =
   | { kind: 'idle' }
   | { kind: 'loading' }
   | { kind: 'error'; message: string }
-  | { kind: 'pdf'; url: string }
-  | { kind: 'docx'; html: string }
+  | { kind: 'pdf'; path: string; source: 'file' | 'converted' }
   | { kind: 'spreadsheet'; workbook: XLSX.WorkBook; sheetName: string };
 
 const SUPPORTED_SPREADSHEET_EXTS = new Set(['xls', 'xlsx', 'csv']);
-const SUPPORTED_WORD_EXTS = new Set(['doc', 'docx']);
+const SUPPORTED_PRESENTATION_EXTS = new Set(['ppt', 'pptx', 'doc', 'docx']);
 
 function getFileName(path: string) {
   if (!path) return 'document';
@@ -30,6 +29,7 @@ function getExtension(path: string) {
 }
 
 const API_URL = '/api/files/content';
+const PREVIEW_PDF_URL = '/api/files/preview-pdf';
 
 async function fetchFileContent(path: string): Promise<ArrayBuffer> {
   const resp = await fetch(API_URL, {
@@ -39,6 +39,19 @@ async function fetchFileContent(path: string): Promise<ArrayBuffer> {
   });
   if (!resp.ok) {
     throw new Error(`Failed to load document (${resp.status})`);
+  }
+  return resp.arrayBuffer();
+}
+
+async function fetchConvertedPdf(path: string): Promise<ArrayBuffer> {
+  const resp = await fetch(PREVIEW_PDF_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({ error: `Failed to convert document (${resp.status})` }));
+    throw new Error(body.error || `Failed to convert document (${resp.status})`);
   }
   return resp.arrayBuffer();
 }
@@ -62,7 +75,7 @@ async function downloadFile(path: string) {
   URL.revokeObjectURL(url);
 }
 
-function PdfPreview({ path }: { path: string }) {
+function PdfPreview({ path, source }: { path: string; source: 'file' | 'converted' }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +93,7 @@ function PdfPreview({ path }: { path: string }) {
       container.innerHTML = '';
 
       try {
-        const buffer = await fetchFileContent(path);
+        const buffer = source === 'converted' ? await fetchConvertedPdf(path) : await fetchFileContent(path);
         if (cancelled) return;
 
         const blob = new Blob([buffer], { type: 'application/pdf' });
@@ -143,7 +156,7 @@ function PdfPreview({ path }: { path: string }) {
         container.innerHTML = '';
       }
     };
-  }, [path]);
+  }, [path, source]);
 
   if (error) {
     return (
@@ -162,7 +175,6 @@ function PdfPreview({ path }: { path: string }) {
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[#11161f]/85 text-gray-400">
           <div className="flex items-center gap-2">
             <Loader2 className="h-5 w-5 animate-spin" />
-            Rendering PDF...
           </div>
         </div>
       )}
@@ -185,7 +197,12 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
     }
 
     if (extension === 'pdf') {
-      setState({ kind: 'pdf', url: path });
+      setState({ kind: 'pdf', path, source: 'file' });
+      return;
+    }
+
+    if (SUPPORTED_PRESENTATION_EXTS.has(extension)) {
+      setState({ kind: 'pdf', path, source: 'converted' });
       return;
     }
 
@@ -205,24 +222,6 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
             throw new Error('Spreadsheet has no visible sheets');
           }
           setState({ kind: 'spreadsheet', workbook, sheetName: firstSheet });
-          return;
-        }
-
-        if (extension === 'docx') {
-          if (buffer.byteLength === 0) {
-            throw new Error('File content is empty (0 bytes). The file may be corrupted — try re-copying it.');
-          }
-          const result = await mammoth.convertToHtml({ arrayBuffer: buffer });
-          if (cancelled) return;
-          setState({ kind: 'docx', html: result.value || '<p class="text-gray-500">Empty document</p>' });
-          return;
-        }
-
-        if (SUPPORTED_WORD_EXTS.has(extension)) {
-          setState({
-            kind: 'error',
-            message: 'Legacy .doc files cannot be rendered reliably in-browser. Please download the file or convert it to .docx for preview.',
-          });
           return;
         }
 
@@ -313,18 +312,7 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
     }
 
     if (state.kind === 'pdf') {
-      return <PdfPreview path={state.url} />;
-    }
-
-    if (state.kind === 'docx') {
-      return (
-        <div className="h-full overflow-auto bg-[#11161f] p-6">
-          <article
-            className="document-prose mx-auto min-h-full max-w-4xl rounded-xl bg-white px-10 py-8 text-gray-900 shadow-2xl"
-            dangerouslySetInnerHTML={{ __html: state.html }}
-          />
-        </div>
-      );
+      return <PdfPreview path={state.path} source={state.source} />;
     }
 
     const sheet = state.workbook.Sheets[state.sheetName];
@@ -377,10 +365,14 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
   return (
     <div className="flex h-full flex-col bg-[#0d1117] text-gray-200">
       <div className="flex items-center justify-between gap-3 border-b border-white/5 bg-white/[0.02] px-3 py-2">
-        <div className="flex min-w-0 items-center gap-2 text-xs text-gray-400">
-          {state.kind === 'spreadsheet' ? <FileSpreadsheet className="h-4 w-4 text-emerald-400" /> : <FileText className="h-4 w-4 text-sky-400" />}
-          <span className="truncate">{path ? getFileName(path) : 'No Document'}</span>
-        </div>
+        <button
+          onClick={() => setShowPicker(true)}
+          className="inline-flex items-center gap-2 rounded-md bg-white/5 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
+          title="Open File"
+        >
+          <FolderOpen className="h-4 w-4" />
+          Open
+        </button>
         <div className="flex items-center gap-1">
           {path && (
             <>
@@ -406,13 +398,6 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
               </button>
             </>
           )}
-          <button
-            onClick={() => setShowPicker(true)}
-            className="rounded-md p-1.5 text-gray-400 transition-colors hover:bg-white/10 hover:text-white"
-            title="Open File"
-          >
-            <FolderOpen className="h-4 w-4" />
-          </button>
         </div>
       </div>
       <div className="min-h-0 flex-1 relative">
@@ -421,6 +406,7 @@ export default function DocumentViewer({ windowId, actions, appState }: AppCompo
           <FolderPicker
             mode="file"
             title="Open Document"
+            extensions={getExtensionsForApp('document-viewer')}
             onSelect={handleFileSelect}
             onCancel={() => setShowPicker(false)}
           />

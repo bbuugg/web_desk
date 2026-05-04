@@ -17,7 +17,9 @@ interface WindowProps {
   children: React.ReactNode;
 }
 
-const TASKBAR_HEIGHT = 56;
+// Taskbar: bottom-4 (16px) + h-14/sm:h-16 (56/64px)
+const TASKBAR_HEIGHT = 80;
+const TITLE_BAR_HEIGHT = 40;
 
 export default function Window({ windowState, actions, children }: WindowProps) {
   const { id, title, icon, x, y, width, height, isMinimized, isMaximized, isFocused, zIndex } = windowState;
@@ -44,7 +46,12 @@ export default function Window({ windowState, actions, children }: WindowProps) 
       if (!dragRef.current || ev.pointerId !== dragRef.current.pointerId) return;
       const dx = ev.clientX - dragRef.current.startX;
       const dy = ev.clientY - dragRef.current.startY;
-      actions.updateWindowPosition(id, dragRef.current.origX + dx, Math.max(0, dragRef.current.origY + dy));
+      // Clamp so the title bar always stays in the desktop area: never
+      // above the top edge, never under the taskbar (where it'd be
+      // unreachable for re-grabbing).
+      const maxY = window.innerHeight - TASKBAR_HEIGHT - TITLE_BAR_HEIGHT;
+      const nextY = Math.min(maxY, Math.max(0, dragRef.current.origY + dy));
+      actions.updateWindowPosition(id, dragRef.current.origX + dx, nextY);
     };
     const onUp = (ev: PointerEvent) => {
       if (!dragRef.current || ev.pointerId !== dragRef.current.pointerId) return;
@@ -81,7 +88,11 @@ export default function Window({ windowState, actions, children }: WindowProps) 
         newW = Math.max(windowState.minWidth, startW - delta);
         if (newW > windowState.minWidth) newX = startLeft + delta;
       }
-      if (direction.includes('s')) newH = Math.max(windowState.minHeight, startH + (ev.clientY - startY));
+      if (direction.includes('s')) {
+        // Don't let the bottom edge dive under the taskbar.
+        const maxH = window.innerHeight - TASKBAR_HEIGHT - startTop;
+        newH = Math.min(maxH, Math.max(windowState.minHeight, startH + (ev.clientY - startY)));
+      }
       if (direction.includes('n')) {
         const delta = ev.clientY - startY;
         newH = Math.max(windowState.minHeight, startH - delta);

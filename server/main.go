@@ -1,7 +1,9 @@
 package main
 
 import (
+	"embed"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -13,13 +15,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+//go:embed web/dist/*
+var staticEmbed embed.FS
+
 func main() {
 	r := gin.Default()
 
 	// CORS middleware
 	r.Use(func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -36,38 +41,74 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		})
 
+		// Security status and session endpoints
+		api.GET("/config/security", handler.GetSecurityConfig)
+		api.POST("/config/security/verify", handler.VerifySecurityPassword)
+		api.POST("/config/security/logout", handler.LogoutSecurityAuth)
+
+		protected := api.Group("")
+		protected.Use(handler.RequireSecurityAuth())
+
 		// WebSocket endpoint for file manager
-		api.GET("/ws/files", handler.FileManagerWS)
+		protected.GET("/ws/files", handler.FileManagerWS)
 		// HTTP endpoint for file content (thumbnails, downloads)
-		api.GET("/files/content", handler.GetFileContent)
-		api.POST("/files/content", handler.GetFileContent)
+		protected.GET("/files/content", handler.GetFileContent)
+		protected.POST("/files/content", handler.GetFileContent)
 		// HTTP endpoint for file uploads (multipart, multiple files)
-		api.POST("/files/upload", handler.UploadFiles)
-		api.POST("/files/upload-url", handler.UploadURL)
+		protected.POST("/files/upload", handler.UploadFiles)
+		protected.POST("/files/upload-url", handler.UploadURL)
+		protected.POST("/files/preview-pdf", handler.ConvertOfficePreview)
 
 		// WebSocket endpoint for terminal
-		api.GET("/ws/terminal", handler.TerminalWS)
+		protected.GET("/ws/terminal", handler.TerminalWS)
 
 		// WebSocket endpoint for system monitor
-		api.GET("/ws/sysmon", handler.SystemMonitorWS)
+		protected.GET("/ws/sysmon", handler.SystemMonitorWS)
 
 		// Terminal configuration (idle session TTL)
-		api.GET("/config/terminal", handler.GetTerminalConfig)
-		api.PUT("/config/terminal", handler.UpdateTerminalConfig)
+		protected.GET("/config/terminal", handler.GetTerminalConfig)
+		protected.PUT("/config/terminal", handler.UpdateTerminalConfig)
 
 		// Port mappings configuration
-		api.GET("/config/port-mappings", handler.GetPortMappings)
-		api.POST("/config/port-mappings", handler.AddPortMapping)
-		api.PUT("/config/port-mappings/:id", handler.UpdatePortMapping)
-		api.DELETE("/config/port-mappings/:id", handler.DeletePortMapping)
+		protected.GET("/config/port-mappings", handler.GetPortMappings)
+		protected.POST("/config/port-mappings", handler.AddPortMapping)
+		protected.PUT("/config/port-mappings/:id", handler.UpdatePortMapping)
+		protected.DELETE("/config/port-mappings/:id", handler.DeletePortMapping)
 
 		// Wallpaper configuration
-		api.GET("/config/wallpaper", handler.GetWallpaper)
-		api.POST("/config/wallpaper", handler.UploadWallpaper)
-		api.Static("/wallpaper/raw", "./uploads/wallpapers")
+		protected.GET("/config/wallpaper", handler.GetWallpaper)
+		protected.POST("/config/wallpaper", handler.UploadWallpaper)
+		protected.Static("/wallpaper/raw", "./uploads/wallpapers")
+
+		// Boot password configuration
+		protected.PUT("/config/security/password", handler.UpdateSecurityPassword)
 	}
 
-	if staticDir, err := resolveStaticDir(); err != nil {
+	// Try embedded assets first, fall back to filesystem via STATIC_DIR
+	if staticFS, err := fs.Sub(staticEmbed, "web/dist"); err == nil {
+		log.Printf("Serving frontend assets from embedded binary")
+		r.NoRoute(func(c *gin.Context) {
+			if c.Request.Method != http.MethodGet || strings.HasPrefix(c.Request.URL.Path, "/api/") {
+				c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+				return
+			}
+
+			path := strings.TrimPrefix(c.Request.URL.Path, "/")
+			if path == "" {
+				path = "index.html"
+			}
+
+			// Try to serve the requested file
+			if f, statErr := staticFS.Open(path); statErr == nil {
+				f.Close()
+				http.FileServer(http.FS(staticFS)).ServeHTTP(c.Writer, c.Request)
+				return
+			}
+
+			// SPA fallback: serve index.html
+			c.File("index.html")
+		})
+	} else if staticDir, err := resolveStaticDir(); err != nil {
 		log.Printf("Static assets disabled: %v", err)
 	} else {
 		indexPath := filepath.Join(staticDir, "index.html")

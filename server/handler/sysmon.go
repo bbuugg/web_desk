@@ -198,10 +198,19 @@ func collectStats(prevNetIO *net.IOCountersStat) (*SystemStats, *net.IOCountersS
 	}
 
 	// Disk
-	partitions, _ := disk.Partitions(false)
+	partitions, errP := disk.Partitions(true)
+	if errP != nil {
+		log.Println("Disk.Partitions error:", errP)
+	}
+	log.Printf("Disk partitions found: %d", len(partitions))
 	for _, p := range partitions {
 		usage, err := disk.Usage(p.Mountpoint)
-		if err != nil || usage.Total == 0 {
+		if err != nil {
+			log.Printf("Disk.Usage error for %s: %v", p.Mountpoint, err)
+			continue
+		}
+		if usage.Total == 0 {
+			log.Printf("Disk.Usage zero total for %s", p.Mountpoint)
 			continue
 		}
 		stats.Disk = append(stats.Disk, DiskStats{
@@ -213,6 +222,7 @@ func collectStats(prevNetIO *net.IOCountersStat) (*SystemStats, *net.IOCountersS
 			UsedPercent: usage.UsedPercent,
 		})
 	}
+	log.Printf("Disk stats collected: %d", len(stats.Disk))
 
 	// Network
 	var currentNetIO *net.IOCountersStat

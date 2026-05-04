@@ -28,6 +28,8 @@ export interface DesktopApp {
   // When true, opening the app always spawns a new window; otherwise an
   // existing window for the same app is focused/restored instead.
   multiInstance?: boolean;
+  // File extensions this app can open (without leading dot), e.g. ['txt', 'md'].
+  fileExtensions?: string[];
 }
 
 export interface AppComponentProps {

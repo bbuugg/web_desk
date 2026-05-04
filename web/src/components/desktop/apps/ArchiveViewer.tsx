@@ -4,7 +4,9 @@ import { toast } from 'sonner';
 import type { AppComponentProps } from '@/types/desktop';
 import { FileManagerClient, type FileInfo } from '@/lib/ws-client';
 import FolderPicker from '@/components/desktop/FolderPicker';
+import { getExtensionsForApp } from '@/lib/fileAssociations';
 import { getParentPath } from '@/lib/path-utils';
+import { formatSize } from '@/lib/utils';
 
 export default function ArchiveViewer({ windowId, actions, appState }: AppComponentProps) {
   const [allFiles, setAllFiles] = useState<FileInfo[]>([]);
@@ -210,6 +212,7 @@ export default function ArchiveViewer({ windowId, actions, appState }: AppCompon
           <FolderPicker
             mode="file"
             title="Open Archive"
+            extensions={getExtensionsForApp('archive-viewer')}
             onSelect={handleArchiveSelect}
             onCancel={() => setShowFilePicker(false)}
           />
@@ -223,18 +226,17 @@ export default function ArchiveViewer({ windowId, actions, appState }: AppCompon
       {/* Toolbar */}
       <div className="flex flex-col border-b border-white/5 bg-white/[0.02]">
         <div className="flex items-center justify-between px-3 py-2">
-          <div className="text-xs text-gray-400 truncate max-w-[50%] flex items-center gap-2 font-medium">
-            <FileArchive className="w-3.5 h-3.5 text-amber-400" />
-            {path.split(/[/\\]/).pop()}
-          </div>
           <div className="flex items-center gap-2">
             <button
               onClick={(e) => { e.stopPropagation(); setShowFilePicker(true); }}
-              className="p-1.5 rounded-md text-gray-400 hover:bg-white/10 hover:text-white transition-colors mr-2"
+              className="flex items-center gap-1.5 rounded-md bg-white/5 px-3 py-1 text-xs font-semibold text-gray-300 transition-colors hover:bg-white/10 hover:text-white"
               title="Open different archive"
             >
               <FolderOpen className="w-3.5 h-3.5" />
+              Open
             </button>
+          </div>
+          <div className="flex items-center gap-2">
             {selected.size > 0 && (
               <button
                 onClick={(e) => { e.stopPropagation(); setShowPicker(true); }}
@@ -373,10 +375,3 @@ export default function ArchiveViewer({ windowId, actions, appState }: AppCompon
   );
 }
 
-function formatSize(bytes: number) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}

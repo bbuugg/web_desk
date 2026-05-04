@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -37,12 +38,25 @@ type WSRequest struct {
 	Data   json.RawMessage `json:"data"`
 }
 
-// Response to client
+// Response to client. When Progress is true, the message is a streamed
+// intermediate update for an in-flight request — the client should keep the
+// pending entry alive instead of resolving it. Final messages always have
+// Progress == false.
 type WSResponse struct {
-	ID    string      `json:"id"`
-	OK    bool        `json:"ok"`
-	Error string      `json:"error,omitempty"`
-	Data  interface{} `json:"data,omitempty"`
+	ID       string      `json:"id"`
+	OK       bool        `json:"ok"`
+	Error    string      `json:"error,omitempty"`
+	Data     interface{} `json:"data,omitempty"`
+	Progress bool        `json:"progress,omitempty"`
+}
+
+// ProgressData is the generic payload for progress updates. Done/Total are
+// in caller-defined units (e.g. file count); Current is the item being
+// processed when the update was emitted, if meaningful.
+type ProgressData struct {
+	Done    int    `json:"done"`
+	Total   int    `json:"total"`
+	Current string `json:"current,omitempty"`
 }
 
 // --- Data structures ---
@@ -322,25 +336,106 @@ func FileManagerWS(c *gin.Context) {
 }
 
 const (
-	TrashRoot = ".trash"
+	TrashRoot     = ".trash"
+	trashMetaFile = ".meta.json"
 )
 
-func getTrashPath(p string) string {
+// trashCounter disambiguates two deletes that land in the same nanosecond
+// (possible on coarse-resolution clocks like Windows). It only needs to be
+// unique within a single process run.
+var trashCounter atomic.Uint64
+
+// trashMeta is the sidecar file that records where a trashed item came from
+// so handleRestore can put it back. Stored as <wrapperDir>/.meta.json.
+type trashMeta struct {
+	OriginalPath string `json:"originalPath"`
+	DeletedAt    int64  `json:"deletedAt"` // unix ms
+}
+
+// newTrashWrapperName returns a name unique across the lifetime of this
+// process: nanoseconds appended with a monotonic counter.
+func newTrashWrapperName() string {
+	return fmt.Sprintf("%d_%d", time.Now().UnixNano(), trashCounter.Add(1))
+}
+
+// trashWrapperFor returns the absolute wrapper directory that contains a
+// given on-disk trash entry path (the immediate child of trashBase).
+// Returns "" if the path is not inside the trash.
+func trashWrapperFor(p string) string {
 	home, _ := os.UserHomeDir()
 	trashBase := filepath.Join(home, TrashRoot)
+	cleanedP := cleanPath(p)
+	rel, err := filepath.Rel(trashBase, cleanedP)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	first := strings.Split(rel, string(filepath.Separator))[0]
+	if first == "" {
+		return ""
+	}
+	return filepath.Join(trashBase, first)
+}
 
-	// Preserve original path structure inside trash
-	// We need to handle windows drive letters and root paths
-	cleanP := cleanPath(p)
+func writeTrashMeta(wrapperDir string, meta trashMeta) error {
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(wrapperDir, trashMetaFile), data, 0o644)
+}
 
-	// Remove windows volume name for trash path
-	vol := filepath.VolumeName(cleanP)
-	pWithoutVol := cleanP[len(vol):]
+func readTrashMeta(wrapperDir string) (trashMeta, error) {
+	var m trashMeta
+	data, err := os.ReadFile(filepath.Join(wrapperDir, trashMetaFile))
+	if err != nil {
+		return m, err
+	}
+	err = json.Unmarshal(data, &m)
+	return m, err
+}
 
-	// Handle drive letters like C: -> C
-	pWithoutVol = strings.Replace(pWithoutVol, ":", "", 1)
+// trashItemInside returns the path of the single non-meta entry inside a
+// wrapper dir. Wrappers always contain exactly one such entry plus the
+// .meta.json sidecar.
+func trashItemInside(wrapperDir string) (string, os.FileInfo, error) {
+	entries, err := os.ReadDir(wrapperDir)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, e := range entries {
+		if e.Name() == trashMetaFile {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			return "", nil, err
+		}
+		return filepath.Join(wrapperDir, e.Name()), info, nil
+	}
+	return "", nil, fmt.Errorf("trash wrapper %s has no item", wrapperDir)
+}
 
-	return filepath.Join(trashBase, pWithoutVol)
+// uniqueRestorePath returns p if nothing exists there, otherwise appends
+// " (1)", " (2)", … before the extension until a free name is found.
+func uniqueRestorePath(p string) string {
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		return p
+	}
+	dir := filepath.Dir(p)
+	name := filepath.Base(p)
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	if base == "" && strings.HasPrefix(name, ".") {
+		// Dotfile — no real extension to preserve.
+		base = name
+		ext = ""
+	}
+	for i := 1; ; i++ {
+		candidate := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", base, i, ext))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
 }
 
 func handleRequest(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
@@ -395,32 +490,47 @@ func handleDelete(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		return
 	}
 
-	dst := getTrashPath(src)
-
-	// Ensure trash parent directory exists
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot create trash dir: %s", err.Error()))
+	// Each deletion gets its own wrapper directory under trashBase. The
+	// item lives inside under its original basename, with a sidecar
+	// .meta.json that records the original full path so handleRestore
+	// can put it back. This avoids the path-mirroring collisions where
+	// previously trashing /foo/bar (file) blocked later trashing of
+	// /foo/bar/baz because /foo/bar already existed as a non-directory.
+	wrapperDir := filepath.Join(trashBase, newTrashWrapperName())
+	if err := os.MkdirAll(wrapperDir, 0o755); err != nil {
+		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot create trash wrapper: %s", err.Error()))
 		return
 	}
 
-	// If destination exists, add timestamp to avoid conflict
-	if _, err := os.Stat(dst); err == nil {
-		ext := filepath.Ext(dst)
-		base := strings.TrimSuffix(dst, ext)
-		dst = fmt.Sprintf("%s_%d%s", base, time.Now().Unix(), ext)
-	}
+	total, _ := countFiles(src)
+	tracker := newProgressTracker(conn, mu, req.ID, total)
 
-	if err := moveFileOrDir(src, dst); err != nil {
+	dst := filepath.Join(wrapperDir, filepath.Base(src))
+	if err := moveFileOrDir(src, dst, tracker); err != nil {
+		os.RemoveAll(wrapperDir)
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot move to trash: %s", err.Error()))
 		return
 	}
+
+	if err := writeTrashMeta(wrapperDir, trashMeta{
+		OriginalPath: src,
+		DeletedAt:    time.Now().UnixMilli(),
+	}); err != nil {
+		// Roll back the move so we don't leave a wrapper without a meta
+		// (which would become unrecoverable on restore).
+		_ = moveFileOrDir(dst, src, nil)
+		os.RemoveAll(wrapperDir)
+		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot write trash meta: %s", err.Error()))
+		return
+	}
+	tracker.flush()
 
 	sendSuccess(conn, mu, req.ID, gin.H{"path": src, "trashPath": dst})
 }
 
 func handleRestore(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 	var data struct {
-		Path string `json:"path"` // Path in trash
+		Path string `json:"path"` // Path of the trashed item (anywhere inside its wrapper)
 	}
 	if err := json.Unmarshal(req.Data, &data); err != nil {
 		sendError(conn, mu, req.ID, "Invalid restore request data")
@@ -428,46 +538,41 @@ func handleRestore(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 	}
 
 	trashPath := cleanPath(data.Path)
-	home, _ := os.UserHomeDir()
-	trashBase := filepath.Join(home, TrashRoot)
-
-	if !strings.HasPrefix(trashPath, trashBase) {
+	wrapperDir := trashWrapperFor(trashPath)
+	if wrapperDir == "" {
 		sendError(conn, mu, req.ID, "File is not in trash")
 		return
 	}
 
-	// Calculate original path
-	rel, err := filepath.Rel(trashBase, trashPath)
+	meta, err := readTrashMeta(wrapperDir)
 	if err != nil {
-		sendError(conn, mu, req.ID, "Cannot calculate original path")
+		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot read trash meta: %s", err.Error()))
 		return
 	}
 
-	// Note: Restoration logic is simplified here.
-	// In a real system we'd need a mapping file to handle drive letters and complex paths correctly.
-	// For now we'll assume the relative path from trash base can be reconstructed.
-
-	// Restoration logic: If it looks like a drive letter (Windows), restore it.
-	var originalPath string
-	if runtime.GOOS == "windows" {
-		if len(rel) >= 1 && rel[1] == filepath.Separator {
-			originalPath = rel[0:1] + ":" + rel[1:]
-		} else {
-			originalPath = filepath.Join(filepath.VolumeName(home), rel)
-		}
-	} else {
-		originalPath = "/" + rel
+	itemPath, _, err := trashItemInside(wrapperDir)
+	if err != nil {
+		sendError(conn, mu, req.ID, err.Error())
+		return
 	}
 
-	if err := os.MkdirAll(filepath.Dir(originalPath), 0755); err != nil {
+	originalPath := cleanPath(meta.OriginalPath)
+	if err := os.MkdirAll(filepath.Dir(originalPath), 0o755); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot create original parent dir: %s", err.Error()))
 		return
 	}
 
-	if err := moveFileOrDir(trashPath, originalPath); err != nil {
+	// If something already lives at the original path, suffix " (N)" so the
+	// restore never silently overwrites or fails.
+	originalPath = uniqueRestorePath(originalPath)
+
+	if err := moveFileOrDir(itemPath, originalPath, nil); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot restore file: %s", err.Error()))
 		return
 	}
+
+	// Clean up the wrapper (now contains only the meta sidecar).
+	os.RemoveAll(wrapperDir)
 
 	sendSuccess(conn, mu, req.ID, gin.H{"path": originalPath})
 }
@@ -476,12 +581,16 @@ func handleEmptyTrash(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 	home, _ := os.UserHomeDir()
 	trashBase := filepath.Join(home, TrashRoot)
 
-	if err := os.RemoveAll(trashBase); err != nil {
+	total, _ := countFiles(trashBase)
+	tracker := newProgressTracker(conn, mu, req.ID, total)
+
+	if err := removeAllWithProgress(trashBase, tracker); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot empty trash: %s", err.Error()))
 		return
 	}
 
-	os.MkdirAll(trashBase, 0755)
+	os.MkdirAll(trashBase, 0o755)
+	tracker.flush()
 	sendSuccess(conn, mu, req.ID, gin.H{"status": "ok"})
 }
 
@@ -502,10 +611,23 @@ func handlePermanentDelete(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) 
 		return
 	}
 
-	if err := os.RemoveAll(filePath); err != nil {
+	// If the path lives inside a trash wrapper, remove the entire wrapper
+	// (item + meta sidecar) — not just the item — so we don't leave orphan
+	// metadata behind. Progress is reported on the item's regular files;
+	// the meta sidecar removal doesn't tick (it's not part of the count).
+	target := filePath
+	if wrapper := trashWrapperFor(filePath); wrapper != "" {
+		target = wrapper
+	}
+
+	total, _ := countFiles(target)
+	tracker := newProgressTracker(conn, mu, req.ID, total)
+
+	if err := removeAllWithProgress(target, tracker); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot delete permanently: %s", err.Error()))
 		return
 	}
+	tracker.flush()
 
 	sendSuccess(conn, mu, req.ID, gin.H{"path": filePath})
 }
@@ -682,6 +804,63 @@ func handleList(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 		return
 	}
 
+	// Listing the trash root: each immediate child is a wrapper directory
+	// containing a single trashed item plus a .meta.json sidecar. Translate
+	// each wrapper into a FileInfo that surfaces the original item directly,
+	// so the user sees the deleted file/dir as if it were sitting in the
+	// trash. Pre-existing entries that aren't valid wrappers (legacy
+	// path-mirror trash, or wrappers with a missing/corrupt sidecar) are
+	// shown as raw entries so they can still be cleaned up manually.
+	if dirPath == trashBase {
+		files := []FileInfo{}
+		for _, entry := range entries {
+			name := entry.Name()
+			if !data.ShowHidden && strings.HasPrefix(name, ".") {
+				continue
+			}
+			wrapperDir := filepath.Join(dirPath, name)
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			if entry.IsDir() {
+				if _, metaErr := os.Stat(filepath.Join(wrapperDir, trashMetaFile)); metaErr == nil {
+					if itemPath, itemInfo, err := trashItemInside(wrapperDir); err == nil {
+						files = append(files, FileInfo{
+							Name:    itemInfo.Name(),
+							Path:    itemPath,
+							IsDir:   itemInfo.IsDir(),
+							Size:    itemInfo.Size(),
+							Mode:    itemInfo.Mode().String(),
+							ModTime: itemInfo.ModTime().UnixMilli(),
+						})
+						continue
+					}
+				}
+			}
+			// Legacy / orphan entry — show as-is.
+			files = append(files, FileInfo{
+				Name:    name,
+				Path:    wrapperDir,
+				IsDir:   entry.IsDir(),
+				Size:    info.Size(),
+				Mode:    info.Mode().String(),
+				ModTime: info.ModTime().UnixMilli(),
+			})
+		}
+		sort.Slice(files, func(i, j int) bool {
+			if files[i].IsDir != files[j].IsDir {
+				return files[i].IsDir
+			}
+			return strings.ToLower(files[i].Name) < strings.ToLower(files[j].Name)
+		})
+		sendSuccess(conn, mu, req.ID, ListResponse{
+			Path:  dirPath,
+			Files: files,
+		})
+		return
+	}
+
 	files := []FileInfo{}
 	for _, entry := range entries {
 		name := entry.Name()
@@ -805,10 +984,20 @@ func handleCopy(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 	src := cleanPath(data.Src)
 	dst := cleanPath(data.Dst)
 
-	if err := copyFileOrDir(src, dst); err != nil {
+	if _, err := os.Stat(dst); err == nil {
+		sendError(conn, mu, req.ID, fmt.Sprintf("Destination already exists: %s", dst))
+		return
+	}
+
+	total, _ := countFiles(src)
+	tracker := newProgressTracker(conn, mu, req.ID, total)
+
+	if err := copyFileOrDir(src, dst, tracker); err != nil {
+		os.RemoveAll(dst)
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot copy: %s", err.Error()))
 		return
 	}
+	tracker.flush()
 
 	sendSuccess(conn, mu, req.ID, gin.H{"src": src, "dst": dst})
 }
@@ -823,10 +1012,21 @@ func handleMove(conn *websocket.Conn, mu *sync.Mutex, req WSRequest) {
 	src := cleanPath(data.Src)
 	dst := cleanPath(data.Dst)
 
-	if err := moveFileOrDir(src, dst); err != nil {
+	if _, err := os.Stat(dst); err == nil {
+		sendError(conn, mu, req.ID, fmt.Sprintf("Destination already exists: %s", dst))
+		return
+	}
+
+	// Walk the tree once up-front for a stable Total. Wasted on the rename
+	// fast path (instant), but cheap relative to the copy fallback.
+	total, _ := countFiles(src)
+	tracker := newProgressTracker(conn, mu, req.ID, total)
+
+	if err := moveFileOrDir(src, dst, tracker); err != nil {
 		sendError(conn, mu, req.ID, fmt.Sprintf("Cannot move: %s", err.Error()))
 		return
 	}
+	tracker.flush()
 
 	sendSuccess(conn, mu, req.ID, gin.H{"src": src, "dst": dst})
 }
@@ -924,25 +1124,126 @@ func sendError(conn *websocket.Conn, mu *sync.Mutex, id string, errMsg string) {
 	}
 }
 
-func copyFileOrDir(src, dst string) error {
+func sendProgress(conn *websocket.Conn, mu *sync.Mutex, id string, done, total int, current string) {
+	resp := WSResponse{
+		ID:       id,
+		OK:       true,
+		Progress: true,
+		Data:     ProgressData{Done: done, Total: total, Current: current},
+	}
+	b, _ := json.Marshal(resp)
+	mu.Lock()
+	defer mu.Unlock()
+	if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
+		log.Println("WebSocket write error:", err)
+	}
+}
+
+// progressTracker counts completed regular files and throttles outbound
+// messages to ~5/sec. A nil tracker is a valid no-op.
+type progressTracker struct {
+	conn     *websocket.Conn
+	mu       *sync.Mutex
+	id       string
+	total    int
+	done     int
+	lastEmit time.Time
+}
+
+func newProgressTracker(conn *websocket.Conn, mu *sync.Mutex, id string, total int) *progressTracker {
+	return &progressTracker{conn: conn, mu: mu, id: id, total: total}
+}
+
+// tick records that one more file finished. current is the source path of
+// that file, used to label the update on the client.
+func (p *progressTracker) tick(current string) {
+	if p == nil {
+		return
+	}
+	p.done++
+	now := time.Now()
+	if now.Sub(p.lastEmit) >= 200*time.Millisecond {
+		p.lastEmit = now
+		sendProgress(p.conn, p.mu, p.id, p.done, p.total, current)
+	}
+}
+
+func (p *progressTracker) flush() {
+	if p == nil {
+		return
+	}
+	sendProgress(p.conn, p.mu, p.id, p.done, p.total, "")
+}
+
+// countFiles returns the number of regular files reachable from path.
+// Symlink targets are not followed. A regular file at path counts as 1.
+func countFiles(path string) (int, error) {
+	var n int
+	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			n++
+		}
+		return nil
+	})
+	return n, err
+}
+
+// removeAllWithProgress is os.RemoveAll plus per-regular-file progress
+// ticks, so the caller can report deletion progress in the same units as
+// countFiles. Symlinks and directories are unlinked but don't tick.
+func removeAllWithProgress(p string, tracker *progressTracker) error {
+	info, err := os.Lstat(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.IsDir() {
+		entries, err := os.ReadDir(p)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := removeAllWithProgress(filepath.Join(p, e.Name()), tracker); err != nil {
+				return err
+			}
+		}
+		return os.Remove(p)
+	}
+	if err := os.Remove(p); err != nil {
+		return err
+	}
+	if info.Mode().IsRegular() {
+		tracker.tick(p)
+	}
+	return nil
+}
+
+func copyFileOrDir(src, dst string, tracker *progressTracker) error {
 	info, err := os.Stat(src)
 	if err != nil {
 		return err
 	}
 
 	if info.IsDir() {
-		return copyDir(src, dst)
+		return copyDir(src, dst, tracker)
 	}
-	return copyFile(src, dst)
+	return copyFile(src, dst, tracker)
 }
 
 // moveFileOrDir attempts a fast os.Rename and falls back to copy+remove when
-// rename fails (e.g. cross-volume moves on Windows, EXDEV on Unix).
-func moveFileOrDir(src, dst string) error {
+// rename fails (e.g. cross-volume moves on Windows, EXDEV on Unix). The
+// rename fast path skips progress entirely; the fallback streams progress
+// through tracker if provided.
+func moveFileOrDir(src, dst string, tracker *progressTracker) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
 	}
-	if err := copyFileOrDir(src, dst); err != nil {
+	if err := copyFileOrDir(src, dst, tracker); err != nil {
 		os.RemoveAll(dst)
 		return err
 	}
@@ -952,7 +1253,7 @@ func moveFileOrDir(src, dst string) error {
 	return nil
 }
 
-func copyFile(src, dst string) error {
+func copyFile(src, dst string, tracker *progressTracker) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -970,12 +1271,15 @@ func copyFile(src, dst string) error {
 	}
 
 	info, _ := os.Stat(src)
-	os.Chmod(dst, info.Mode())
-	os.Chtimes(dst, time.Now(), info.ModTime())
+	if info != nil {
+		os.Chmod(dst, info.Mode())
+		os.Chtimes(dst, time.Now(), info.ModTime())
+	}
+	tracker.tick(src)
 	return nil
 }
 
-func copyDir(src, dst string) error {
+func copyDir(src, dst string, tracker *progressTracker) error {
 	srcInfo, err := os.Stat(src)
 	if err != nil {
 		return err
@@ -994,7 +1298,7 @@ func copyDir(src, dst string) error {
 		srcPath := filepath.Join(src, entry.Name())
 		dstPath := filepath.Join(dst, entry.Name())
 
-		if err := copyFileOrDir(srcPath, dstPath); err != nil {
+		if err := copyFileOrDir(srcPath, dstPath, tracker); err != nil {
 			return err
 		}
 	}

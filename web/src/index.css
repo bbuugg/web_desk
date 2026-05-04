@@ -197,15 +197,18 @@
 
 /* Glass start menu */
 .start-menu {
-  /* See note above on liquid-glass: route backdrop filters through Tailwind
-     utilities so the production minifier keeps both prefixed and unprefixed
-     declarations. */
-  @apply backdrop-blur-[32px] backdrop-saturate-[1.4];
-  background: rgba(14, 17, 24, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow:
-    0 24px 48px rgba(0, 0, 0, 0.5),
-    0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  @apply liquid-glass;
+  background: rgba(20, 22, 30, 0.82);
+}
+
+.start-menu-wrapper {
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition-behavior: allow-discrete;
+}
+
+.start-menu-wrapper@starting-style {
+  opacity: 0;
+  transform: translateX(-50%) translateY(16px);
 }
 
 /* Window animations */

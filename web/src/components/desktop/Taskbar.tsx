@@ -32,8 +32,11 @@ interface TaskbarProps {
   windows: WindowState[];
   actions: WindowManagerActions;
   apps: DesktopApp[];
+  desktopAppIds: string[];
+  onToggleDesktopApp: (appId: string) => void;
   onToggleStartMenu: () => void;
   startMenuOpen: boolean;
+  onLogout?: () => void;
 }
 
 interface TaskbarWindowGroup {
@@ -61,7 +64,7 @@ function getWindowPreviewSize(win: WindowState) {
   };
 }
 
-export default function Taskbar({ windows, actions, apps, onToggleStartMenu, startMenuOpen }: TaskbarProps) {
+export default function Taskbar({ windows, actions, apps, desktopAppIds, onToggleDesktopApp, onToggleStartMenu, startMenuOpen, onLogout }: TaskbarProps) {
   const [previewAppId, setPreviewAppId] = useState<string | null>(null);
   const [previewAnchor, setPreviewAnchor] = useState<PreviewAnchor | null>(null);
   const isMobile = useIsMobile();
@@ -99,7 +102,7 @@ export default function Taskbar({ windows, actions, apps, onToggleStartMenu, sta
 
   return (
     <div
-      className={`taskbar absolute bottom-4 left-1/2 z-[9999] flex h-16 -translate-x-1/2 items-center rounded-2xl transition-all duration-500 ease-in-out
+      className={`taskbar absolute bottom-4 left-1/2 z-[9999] flex h-14 sm:h-16 -translate-x-1/2 items-center rounded-2xl transition-all duration-500 ease-in-out
         ${isMobile ? 'w-[96vw] gap-1.5 px-2' : 'min-w-[480px] max-w-[80vw] gap-3 px-4'}
       `}
       onClick={e => e.stopPropagation()}
@@ -183,13 +186,15 @@ export default function Taskbar({ windows, actions, apps, onToggleStartMenu, sta
         </div>
       )}
 
-      {startMenuOpen && (
-        <StartMenu
-          apps={apps}
-          actions={actions}
-          onClose={onToggleStartMenu}
-        />
-      )}
+      <StartMenu
+        apps={apps}
+        actions={actions}
+        onClose={onToggleStartMenu}
+        onLogout={onLogout}
+        open={startMenuOpen}
+        desktopAppIds={desktopAppIds}
+        onToggleDesktopApp={onToggleDesktopApp}
+      />
 
       <button
         onClick={onToggleStartMenu}

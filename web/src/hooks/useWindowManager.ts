@@ -3,7 +3,8 @@ import type { WindowState, DesktopApp, WindowManagerActions } from '@/types/desk
 
 let nextZIndex = 100;
 
-const TASKBAR_HEIGHT = 56;
+// Taskbar: bottom-4 (16px) + h-14/sm:h-16 (56/64px)
+const TASKBAR_HEIGHT = 80;
 const WINDOW_MARGIN = 16;
 const STORAGE_KEY = 'desktop:windows';
 

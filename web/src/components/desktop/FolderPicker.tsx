@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import {
   FolderOpen, ChevronRight, Home, Monitor, Plus, Loader2,
   X, Check, ArrowLeft, ArrowRight, ArrowUp
@@ -14,9 +15,11 @@ interface FolderPickerProps {
   onCancel: () => void;
   title?: string;
   mode?: 'folder' | 'file';
+  /** When set, only files matching these extensions (without dot) are shown. */
+  extensions?: string[];
 }
 
-export default function FolderPicker({ initialPath = '~', onSelect, onCancel, title = 'Select Destination', mode = 'folder' }: FolderPickerProps) {
+export default function FolderPicker({ initialPath = '~', onSelect, onCancel, title = 'Select Destination', mode = 'folder', extensions }: FolderPickerProps) {
   const [currentPath, setCurrentPath] = useState(initialPath);
   const [items, setItems] = useState<FileInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,7 +48,14 @@ export default function FolderPicker({ initialPath = '~', onSelect, onCancel, ti
     setLoading(true);
     try {
       const resp = await clientRef.current.list(path);
-      const filtered = (resp.files || []).filter(f => mode === 'file' || f.isDir);
+      const extSet = extensions && extensions.length > 0 ? new Set(extensions.map(e => e.toLowerCase())) : null;
+      const filtered = (resp.files || []).filter(f => {
+        if (f.isDir) return true;
+        if (mode !== 'file') return true;
+        if (!extSet) return true;
+        const ext = f.name.split('.').pop()?.toLowerCase() || '';
+        return extSet.has(ext);
+      });
       setItems(filtered);
       setCurrentPath(resp.path);
     } catch (e) {
@@ -120,9 +130,9 @@ export default function FolderPicker({ initialPath = '~', onSelect, onCancel, ti
   const selectLabel = mode === 'file' ? 'Select' : 'Select Folder';
   const emptyLabel = mode === 'file' ? 'No items found' : 'No subfolders found';
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-[20000] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="w-[480px] h-[560px] bg-[#161b22] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+      <div className="w-[92vw] sm:w-[480px] h-[85vh] sm:h-[560px] bg-[#161b22] border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-4 py-3 border-b border-white/5 flex items-center justify-between bg-white/[0.02]">
           <h3 className="text-sm font-semibold text-gray-200 flex items-center gap-2">
@@ -200,7 +210,7 @@ export default function FolderPicker({ initialPath = '~', onSelect, onCancel, ti
         </div>
 
         {/* List */}
-        <div className="flex-1 overflow-auto min-h-[300px]">
+        <div className="flex-1 overflow-auto min-h-[150px] sm:min-h-[300px]">
           {loading ? (
             <div className="flex flex-col items-center justify-center h-full gap-2 text-gray-500">
               <Loader2 className="w-5 h-5 animate-spin" />
@@ -283,6 +293,7 @@ export default function FolderPicker({ initialPath = '~', onSelect, onCancel, ti
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
