@@ -139,7 +139,7 @@ export default function DesktopIcon({ app, isSelected, defaultPosition, rndKey, 
   return (
     <Rnd
       key={rndKey}
-      default={{ x: pos.x, y: pos.y }}
+      default={{ x: pos.x, y: pos.y, width: 88, height: 96 }}
       enableResizing={false}
       bounds="#icon-area"
       dragGrid={[4, 4]}
