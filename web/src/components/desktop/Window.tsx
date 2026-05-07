@@ -5,6 +5,7 @@ import {
   Minus, Square, X, Copy,
 } from 'lucide-react';
 import type { WindowState, WindowManagerActions } from '@/types/desktop';
+import { getTaskbarReservedHeight } from '@/lib/window-layout';
 
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
   FolderOpen, TerminalSquare, Activity, Settings,
@@ -17,8 +18,6 @@ interface WindowProps {
   children: React.ReactNode;
 }
 
-// Taskbar: bottom-4 (16px) + h-14/sm:h-16 (56/64px)
-const TASKBAR_HEIGHT = 80;
 const TITLE_BAR_HEIGHT = 40;
 
 export default function Window({ windowState, actions, children }: WindowProps) {
@@ -49,7 +48,7 @@ export default function Window({ windowState, actions, children }: WindowProps) 
       // Clamp so the title bar always stays in the desktop area: never
       // above the top edge, never under the taskbar (where it'd be
       // unreachable for re-grabbing).
-      const maxY = window.innerHeight - TASKBAR_HEIGHT - TITLE_BAR_HEIGHT;
+      const maxY = window.innerHeight - getTaskbarReservedHeight(window.innerWidth) - TITLE_BAR_HEIGHT;
       const nextY = Math.min(maxY, Math.max(0, dragRef.current.origY + dy));
       actions.updateWindowPosition(id, dragRef.current.origX + dx, nextY);
     };
@@ -90,7 +89,7 @@ export default function Window({ windowState, actions, children }: WindowProps) 
       }
       if (direction.includes('s')) {
         // Don't let the bottom edge dive under the taskbar.
-        const maxH = window.innerHeight - TASKBAR_HEIGHT - startTop;
+        const maxH = window.innerHeight - getTaskbarReservedHeight(window.innerWidth) - startTop;
         newH = Math.min(maxH, Math.max(windowState.minHeight, startH + (ev.clientY - startY)));
       }
       if (direction.includes('n')) {
@@ -114,7 +113,7 @@ export default function Window({ windowState, actions, children }: WindowProps) 
   // WebSockets, scroll position, etc. Hide it via CSS instead so child
   // components keep running in the background.
   const style: React.CSSProperties = isMaximized
-    ? { top: 0, left: 0, width: '100%', height: `calc(100dvh - ${TASKBAR_HEIGHT}px)`, zIndex }
+    ? { top: 0, left: 0, width: '100%', height: `calc(100dvh - ${getTaskbarReservedHeight(window.innerWidth)}px)`, zIndex }
     : { top: y, left: x, width, height, zIndex };
   if (isMinimized) {
     style.display = 'none';

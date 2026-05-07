@@ -18,8 +18,8 @@ async function importTsModule(path) {
 const layout = await importTsModule('../src/lib/window-layout.ts');
 
 test('desktop work area reserves the visible taskbar height and bottom inset', () => {
-  assert.equal(layout.getTaskbarReservedHeight(1024), 80);
-  assert.equal(layout.getTaskbarReservedHeight(500), 72);
+  assert.equal(layout.getTaskbarReservedHeight(1024), 64);
+  assert.equal(layout.getTaskbarReservedHeight(500), 56);
 });
 
 test('window position clamp keeps the full window above the taskbar', () => {
@@ -32,5 +32,5 @@ test('window position clamp keeps the full window above the taskbar', () => {
     viewportHeight: 768,
   });
 
-  assert.equal(rect.y + rect.height, 688);
+  assert.equal(rect.y + rect.height, 704);
 });

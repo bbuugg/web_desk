@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { toast } from 'sonner';
 import { Lock, Loader2, RefreshCw, Upload, LayoutGrid } from 'lucide-react';
+import { getTaskbarReservedHeight } from '@/lib/window-layout';
 
 type BootState = 'checking' | 'password' | 'error' | 'ready';
 
@@ -108,6 +109,8 @@ export default function Desktop() {
   const isDraggingRef = useRef(false);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
   const desktopRef = useRef<HTMLDivElement>(null);
+  const iconAreaBottom = getTaskbarReservedHeight(window.innerWidth);
+  const iconAreaHeight = viewportHeight - iconAreaBottom;
 
   const toggleDesktopApp = useCallback((appId: string) => {
     setDesktopAppIds(prev => {
@@ -189,7 +192,7 @@ export default function Desktop() {
   let vi = 0;
   desktopApps.forEach((app) => {
     if (!desktopAppIds.includes(app.id)) return;
-    resolvedPositions[app.id] = iconPositions[app.id] ?? defaultIconPosition(vi, viewportHeight - 120);
+    resolvedPositions[app.id] = iconPositions[app.id] ?? defaultIconPosition(vi, iconAreaHeight);
     vi++;
   });
 
@@ -336,9 +339,9 @@ export default function Desktop() {
     // Clamp so the icon stays within the desktop area (accounting for taskbar).
     const ICON_W = 88;
     const ICON_H = 100;
-    const BOTTOM_MARGIN = 120;
+    const bottomMargin = getTaskbarReservedHeight(window.innerWidth);
     const clampedX = Math.max(0, Math.min(x, window.innerWidth - ICON_W));
-    const clampedY = Math.max(0, Math.min(y, window.innerHeight - BOTTOM_MARGIN - ICON_H));
+    const clampedY = Math.max(0, Math.min(y, window.innerHeight - bottomMargin - ICON_H));
     setIconPositions(prev => {
       const next = { ...prev, [appId]: { x: clampedX, y: clampedY } };
       try { localStorage.setItem(ICON_POS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
@@ -349,7 +352,7 @@ export default function Desktop() {
   const organizeDesktop = useCallback(() => {
     // Check if any icon has a saved position that differs from its default grid position.
     // Undefined saved position means the icon is already at its default — no reset needed.
-    const areaH = viewportHeight - 120;
+    const areaH = iconAreaHeight;
     let vi = 0;
     let needsReset = false;
     desktopApps.forEach((app) => {
@@ -368,7 +371,7 @@ export default function Desktop() {
     try { localStorage.removeItem(ICON_POS_KEY); } catch { /* ignore */ }
     if (needsReset) setIconResetKey(k => k + 1);
     toast.success('桌面已整理');
-  }, [iconPositions, desktopAppIds]);
+  }, [iconPositions, desktopAppIds, iconAreaHeight]);
 
 
 
@@ -567,7 +570,7 @@ export default function Desktop() {
           onChange={handleWallpaperUpload}
         />
 
-        <div id="icon-area" className="absolute inset-0 bottom-[120px] z-10 pointer-events-none">
+        <div id="icon-area" className="absolute inset-0 z-10 pointer-events-none" style={{ bottom: iconAreaBottom }}>
           {desktopApps.filter(a => desktopAppIds.includes(a.id)).map(app => {
             const pos = resolvedPositions[app.id];
             return (
@@ -612,7 +615,7 @@ export default function Desktop() {
           />
         )}
 
-        <div className="absolute inset-0 bottom-[120px] z-20 pointer-events-none">
+        <div className="absolute inset-0 z-20 pointer-events-none" style={{ bottom: iconAreaBottom }}>
           {windows.map(win => {
             const app = desktopApps.find(a => a.id === win.appId);
             if (!app) return null;

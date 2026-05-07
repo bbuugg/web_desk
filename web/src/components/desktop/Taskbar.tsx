@@ -102,8 +102,8 @@ export default function Taskbar({ windows, actions, apps, desktopAppIds, onToggl
 
   return (
     <div
-      className={`taskbar absolute bottom-4 left-1/2 z-[9999] flex h-14 sm:h-16 -translate-x-1/2 items-center rounded-2xl transition-all duration-500 ease-in-out
-        ${isMobile ? 'w-[96vw] gap-1.5 px-2' : 'min-w-[480px] max-w-[80vw] gap-3 px-4'}
+      className={`taskbar absolute bottom-2 left-1/2 z-[9999] flex h-12 sm:h-14 -translate-x-1/2 items-center rounded-xl transition-all duration-500 ease-in-out
+        ${isMobile ? 'w-[96vw] gap-1.5 px-2' : 'min-w-[480px] max-w-[80vw] gap-2.5 px-3'}
       `}
       onClick={e => e.stopPropagation()}
       onMouseLeave={hidePreview}
@@ -198,14 +198,14 @@ export default function Taskbar({ windows, actions, apps, desktopAppIds, onToggl
 
       <button
         onClick={onToggleStartMenu}
-        className={`rounded-2xl p-3 transition-all duration-300 hover:scale-110 active:scale-95 ${startMenuOpen ? 'bg-emerald-500/30 text-emerald-400 shadow-lg shadow-emerald-500/20' : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'}`}
+        className={`rounded-xl p-2.5 transition-all duration-300 hover:scale-110 active:scale-95 ${startMenuOpen ? 'bg-emerald-500/30 text-emerald-400 shadow-lg shadow-emerald-500/20' : 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white'}`}
         title="Start"
         aria-label="Start"
       >
-        <LayoutGrid className="h-6 w-6" />
+        <LayoutGrid className="h-5 w-5" />
       </button>
 
-      {!isMobile && <div className="mx-1 h-8 w-px bg-white/20" />}
+      {!isMobile && <div className="mx-0.5 h-7 w-px bg-white/20" />}
 
       <div className="flex flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden no-scrollbar">
         {groupedWindows.map(group => {
@@ -221,7 +221,7 @@ export default function Taskbar({ windows, actions, apps, desktopAppIds, onToggl
               onMouseEnter={e => showPreviewForGroup(group.appId, e.currentTarget)}
             >
               <button
-                className={`relative flex h-11 w-12 items-center justify-center rounded-xl text-sm transition-all duration-300 animate-dock-item
+                className={`relative flex h-10 w-11 items-center justify-center rounded-lg text-sm transition-all duration-300 animate-dock-item
                   ${isFocused
                     ? 'bg-white/15 text-white shadow-lg'
                     : 'bg-white/5 text-gray-300 hover:bg-white/10'

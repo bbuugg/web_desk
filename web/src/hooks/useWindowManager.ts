@@ -1,18 +1,18 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import type { WindowState, DesktopApp, WindowManagerActions } from '@/types/desktop';
+import { getTaskbarReservedHeight } from '@/lib/window-layout';
 
 let nextZIndex = 100;
 
-// Taskbar: bottom-4 (16px) + h-14/sm:h-16 (56/64px)
-const TASKBAR_HEIGHT = 80;
 const WINDOW_MARGIN = 16;
 const STORAGE_KEY = 'desktop:windows';
 
 function getViewportBounds() {
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
+  const taskbarHeight = getTaskbarReservedHeight(viewportWidth);
   const availableWidth = Math.max(280, viewportWidth - WINDOW_MARGIN * 2);
-  const availableHeight = Math.max(220, viewportHeight - TASKBAR_HEIGHT - WINDOW_MARGIN * 2);
+  const availableHeight = Math.max(220, viewportHeight - taskbarHeight - WINDOW_MARGIN * 2);
 
   return {
     viewportWidth,
@@ -72,13 +72,14 @@ export function useWindowManager(): [WindowState[], WindowManagerActions] {
       }
 
       const { viewportWidth, availableWidth, availableHeight } = getViewportBounds();
+      const taskbarHeight = getTaskbarReservedHeight(viewportWidth);
       const width = Math.min(app.defaultWidth ?? Math.min(900, window.innerWidth * 0.65), availableWidth);
       const height = Math.min(app.defaultHeight ?? Math.min(600, window.innerHeight * 0.65), availableHeight);
       const minWidth = Math.min(420, availableWidth);
       const minHeight = Math.min(300, availableHeight);
       const offset = (prev.length * 32) % 160;
       const maxX = Math.max(WINDOW_MARGIN, viewportWidth - width - WINDOW_MARGIN);
-      const maxY = Math.max(WINDOW_MARGIN, window.innerHeight - TASKBAR_HEIGHT - height - WINDOW_MARGIN);
+      const maxY = Math.max(WINDOW_MARGIN, window.innerHeight - taskbarHeight - height - WINDOW_MARGIN);
       const x = Math.min(Math.max(WINDOW_MARGIN, (viewportWidth - width) / 2 + offset), maxX);
       const y = Math.min(Math.max(WINDOW_MARGIN, (availableHeight - height) / 2 + offset), maxY);
 
@@ -146,7 +147,7 @@ export function useWindowManager(): [WindowState[], WindowManagerActions] {
         ? {
             ...w,
             x: Math.min(Math.max(0, x), Math.max(0, window.innerWidth - w.width)),
-            y: Math.min(Math.max(0, y), Math.max(0, window.innerHeight - TASKBAR_HEIGHT - w.height)),
+            y: Math.min(Math.max(0, y), Math.max(0, window.innerHeight - getTaskbarReservedHeight(window.innerWidth) - w.height)),
           }
         : w
     ));
@@ -163,7 +164,7 @@ export function useWindowManager(): [WindowState[], WindowManagerActions] {
               ? Math.min(Math.max(0, x), Math.max(0, window.innerWidth - nextWidth))
               : w.x;
             const nextY = y !== undefined
-              ? Math.min(Math.max(0, y), Math.max(0, window.innerHeight - TASKBAR_HEIGHT - nextHeight))
+              ? Math.min(Math.max(0, y), Math.max(0, window.innerHeight - getTaskbarReservedHeight(window.innerWidth) - nextHeight))
               : w.y;
 
             return {
