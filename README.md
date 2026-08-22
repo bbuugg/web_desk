@@ -104,3 +104,5 @@ docker-compose up --build
 
 ## 联系
 如需帮助，请在仓库 Issue 中描述复现步骤与期望行为。
+
+https://gotenberg.dev/docs/getting-started/installation
